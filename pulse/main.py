@@ -7,6 +7,7 @@ from pulse.config import BOT_TOKEN
 from pulse.core.permissions import get_permissions_for_role
 from pulse.core.users import get_user_by_telegram
 from pulse.menu.menu_builder import PERMISSION_MENU_MAP, build_menu_markup, get_menu_labels_for_permissions
+from pulse.menu.submenu import show_main_menu, show_manage_users_menu, MAIN_STATE, MANAGE_USERS_STATE
 
 DENY_MESSAGE = "You are not registered in Pulse. Please contact administrator."
 UNAUTHORIZED_MESSAGE = "You do not have access to this action."
@@ -77,18 +78,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     menu_labels = context.user_data.get("menu_labels", [])
 
-    print("Permissions loaded:", context.user_data.get("permissions"))
-    
-    if not menu_labels:
-        await _reply_text(update, "No actions available for your role.", reply_markup=ReplyKeyboardRemove())
-        return
-
-    await _reply_text(
-        update,
-        "Welcome to Pulse. Choose an action:",
-        reply_markup=build_menu_markup(menu_labels),
-    )
-
+    await show_main_menu(update, context, menu_labels, build_menu_markup)
 
 async def view_production_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _handle_stub_action(update, context, "production_view")
@@ -115,7 +105,18 @@ async def my_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def manage_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _handle_stub_action(update, context, "user_manage")
+    if not await load_user_access(update, context):
+        return
+
+    allowed_labels = set(context.user_data.get("menu_labels", []))
+    required_label = PERMISSION_MENU_MAP["user_manage"]
+
+    if required_label not in allowed_labels:
+        await _reply_text(update, UNAUTHORIZED_MESSAGE)
+        return
+
+    await show_manage_users_menu(update, context)
+
 
 
 async def reminder_rules(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -125,7 +126,37 @@ async def reminder_rules(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def fallback_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await load_user_access(update, context):
         return
+
+    state = context.user_data.get("menu_state", MAIN_STATE)
+    text = update.effective_message.text
+
+    # MANAGE USERS STATE
+    if state == MANAGE_USERS_STATE:
+
+        if text == "🔙 Back":
+            menu_labels = context.user_data.get("menu_labels", [])
+            await show_main_menu(update, context, menu_labels, build_menu_markup)
+            return
+
+        if text == "View All Users":
+            from pulse.menu.submenu import show_all_users
+            await show_all_users(update, context)
+            return
+
+        if text == "Assign Task to User":
+            await _reply_text(update, "Assign Task - Coming Soon")
+            return
+
+        if text == "View Tasks of User":
+            await _reply_text(update, "View Tasks - Coming Soon")
+            return
+
+        await _reply_text(update, "Please use the menu buttons.")
+        return
+
+    # DEFAULT MAIN STATE FALLBACK
     await _reply_text(update, "Use the menu buttons or /start to refresh your menu.")
+
 
 
 async def fallback_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
