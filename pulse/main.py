@@ -9,6 +9,8 @@ from pulse.core.users import get_user_by_telegram
 from pulse.menu.menu_builder import PERMISSION_MENU_MAP, build_menu_markup, get_menu_labels_for_permissions
 from pulse.menu.submenu import show_main_menu, show_manage_users_menu, MAIN_STATE, MANAGE_USERS_STATE
 
+from pulse.menu.submenu import USER_CONTEXT_STATE, USER_SELECTION_STATE
+
 DENY_MESSAGE = "You are not registered in Pulse. Please contact administrator."
 UNAUTHORIZED_MESSAGE = "You do not have access to this action."
 STUB_MESSAGE = "Feature under development"
@@ -123,6 +125,20 @@ async def reminder_rules(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await _handle_stub_action(update, context, "reminder_manage")
 
 
+async def _show_menu_for_state(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    state = context.user_data.get("menu_state", MAIN_STATE)
+    if state == MAIN_STATE:
+        menu_labels = context.user_data.get("menu_labels", [])
+        await show_main_menu(update, context, menu_labels, build_menu_markup)
+        return
+    if state == MANAGE_USERS_STATE:
+        await show_manage_users_menu(update, context)
+        return
+
+    menu_labels = context.user_data.get("menu_labels", [])
+    await show_main_menu(update, context, menu_labels, build_menu_markup)
+
+
 async def fallback_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await load_user_access(update, context):
         return
@@ -130,19 +146,35 @@ async def fallback_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     state = context.user_data.get("menu_state", MAIN_STATE)
     text = update.effective_message.text
 
-    # MANAGE USERS STATE
-    if state == MANAGE_USERS_STATE:
+    # MANAGE USERS / USER SELECTION STATE
+    if state in (MANAGE_USERS_STATE, USER_SELECTION_STATE):
+        # Handle paginated selection first
+        from pulse.menu.submenu import handle_user_selection
+
+        handled = await handle_user_selection(update, context, text)
+
+        if handled:
+            if context.user_data.get("menu_state") != USER_SELECTION_STATE:
+                await _show_menu_for_state(update, context)
+            return
+
+        if state == USER_SELECTION_STATE:
+            await _reply_text(update, "Please use the menu buttons.")
+            return
 
         if text == "🔙 Back":
-            menu_labels = context.user_data.get("menu_labels", [])
-            await show_main_menu(update, context, menu_labels, build_menu_markup)
+            nav_stack = context.user_data.setdefault("nav_stack", [MAIN_STATE])
+            if nav_stack and nav_stack[-1] == MANAGE_USERS_STATE:
+                nav_stack.pop()
+            context.user_data["menu_state"] = nav_stack[-1] if nav_stack else MAIN_STATE
+            await _show_menu_for_state(update, context)
             return
-
+        
         if text == "View All Users":
-            from pulse.menu.submenu import show_all_users
-            await show_all_users(update, context)
+            from pulse.menu.submenu import start_user_selection
+            await start_user_selection(update, context)
             return
-
+        
         if text == "Assign Task to User":
             await _reply_text(update, "Assign Task - Coming Soon")
             return
@@ -153,7 +185,25 @@ async def fallback_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
         await _reply_text(update, "Please use the menu buttons.")
         return
+    
+    elif state == USER_CONTEXT_STATE:
 
+        if text == "🔙 Back":
+            context.user_data.pop("selected_user", None)
+            context.user_data["menu_state"] = MANAGE_USERS_STATE
+            await show_manage_users_menu(update, context)
+            return
+
+        if text == "Assign Task":
+            await _reply_text(update, "Assign Task to selected user - Coming Soon")
+            return
+
+        if text == "View Tasks":
+            await _reply_text(update, "View Tasks of selected user - Coming Soon")
+            return
+
+        await _reply_text(update, "Please use the menu buttons.")
+        return
     # DEFAULT MAIN STATE FALLBACK
     await _reply_text(update, "Use the menu buttons or /start to refresh your menu.")
 

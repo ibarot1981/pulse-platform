@@ -20,7 +20,7 @@ PERMISSION_MENU_MAP = {
     "production_complete": "Mark Job Completed",
     "sales_view": "View Sales Data",
     "sales_update": "Update Sales Data",
-    "task_assign": "Assign Task",
+    "task_assign": "Assign Tasks",
     "task_close": "My Tasks",
     "user_manage": "Manage Users",
     "reminder_manage": "Reminder Rules",
