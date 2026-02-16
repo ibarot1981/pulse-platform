@@ -24,6 +24,28 @@ async def show_main_menu(update, context, menu_labels, build_menu_markup):
     )
 
 
+def _format_state_title(state: str) -> str:
+    return state.replace("_", " ").title()
+
+
+async def show_dynamic_submenu(update, context, state: str, menu_labels: list[str]):
+    context.user_data["menu_state"] = state
+    nav_stack = context.user_data.setdefault("nav_stack", [MAIN_STATE])
+    if not nav_stack:
+        nav_stack.append(MAIN_STATE)
+    if nav_stack[-1] != state:
+        nav_stack.append(state)
+
+    keyboard_rows = [[label] for label in menu_labels]
+    keyboard_rows.append([BACK_LABEL])
+    keyboard = ReplyKeyboardMarkup(keyboard_rows, resize_keyboard=True)
+
+    await update.effective_message.reply_text(
+        f"{_format_state_title(state)}:",
+        reply_markup=keyboard,
+    )
+
+
 async def show_manage_users_menu(update, context, menu_labels=None):
     context.user_data["menu_state"] = MANAGE_USERS_STATE
     nav_stack = context.user_data.setdefault("nav_stack", [MAIN_STATE])

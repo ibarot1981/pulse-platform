@@ -66,6 +66,9 @@ class Settings:
     SALES_DOC_ID: str
     SALES_API_KEY: str
 
+    COSTING_DOC_ID: str
+    COSTING_API_KEY: str
+
     ACCOUNTS_DOC_ID: str
     ACCOUNTS_API_KEY: str
 
@@ -76,6 +79,7 @@ class Settings:
     REMINDER_INTERVAL: int
     EVENT_POLL_INTERVAL: int
     TIMEZONE: str
+    MSCUTLIST_PAGE_SIZE: int
 
     # Logging
     LOG_LEVEL: str
@@ -108,6 +112,9 @@ settings = Settings(
     SALES_DOC_ID=get_env("SALES_DOC_ID"),
     SALES_API_KEY=get_env("SALES_API_KEY"),
 
+    COSTING_DOC_ID=get_env("COSTING_DOC_ID", required=False, default=""),
+    COSTING_API_KEY=get_env("COSTING_API_KEY", required=False, default=""),
+
     ACCOUNTS_DOC_ID=get_env("ACCOUNTS_DOC_ID"),
     ACCOUNTS_API_KEY=get_env("ACCOUNTS_API_KEY"),
 
@@ -117,6 +124,7 @@ settings = Settings(
     REMINDER_INTERVAL=get_int("REMINDER_INTERVAL", 300),
     EVENT_POLL_INTERVAL=get_int("EVENT_POLL_INTERVAL", 60),
     TIMEZONE=get_env("TIMEZONE", required=False, default="Asia/Kolkata"),
+    MSCUTLIST_PAGE_SIZE=get_int("MSCUTLIST_PAGE_SIZE", 12),
 
     LOG_LEVEL=get_env("LOG_LEVEL", required=False, default="INFO"),
     ENABLE_ACTIVITY_LOG=get_bool("ENABLE_ACTIVITY_LOG", True),

@@ -11,7 +11,7 @@ from pulse.menu.menu_builder import (
     get_menu_labels_for_permissions,
 )
 from pulse.menu.submenu import MAIN_STATE, MANAGE_USERS_STATE, USER_CONTEXT_STATE, USER_SELECTION_STATE
-from pulse.menu.submenu import BACK_LABEL, show_main_menu, show_manage_users_menu, show_user_context_menu
+from pulse.menu.submenu import BACK_LABEL, show_dynamic_submenu, show_main_menu, show_manage_users_menu, show_user_context_menu
 
 DENY_MESSAGE = "You are not registered in Pulse. Please contact administrator."
 UNAUTHORIZED_MESSAGE = "You do not have access to this action."
@@ -200,8 +200,8 @@ async def _show_menu_for_state(update: Update, context: ContextTypes.DEFAULT_TYP
         await show_user_context_menu(update, context, user_context_labels)
         return
 
-    menu_labels = context.user_data.get("menu_labels", [])
-    await show_main_menu(update, context, menu_labels, build_menu_markup)
+    menu_labels = _submenu_labels(context, state)
+    await show_dynamic_submenu(update, context, state, menu_labels)
 
 
 async def fallback_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -258,6 +258,23 @@ async def fallback_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
         user_context_actions = _menu_actions(context, USER_CONTEXT_STATE)
         action = user_context_actions.get(text)
+        if action:
+            await _execute_menu_action(update, context, action)
+            return
+
+        await _reply_text(update, "Please use the menu buttons.")
+        return
+    elif state not in (MAIN_STATE, USER_SELECTION_STATE):
+        if text == BACK_LABEL:
+            nav_stack = context.user_data.setdefault("nav_stack", [MAIN_STATE])
+            if nav_stack and nav_stack[-1] == state:
+                nav_stack.pop()
+            context.user_data["menu_state"] = nav_stack[-1] if nav_stack else MAIN_STATE
+            await _show_menu_for_state(update, context)
+            return
+
+        actions = _menu_actions(context, state)
+        action = actions.get(text)
         if action:
             await _execute_menu_action(update, context, action)
             return
