@@ -5,7 +5,7 @@ MAIN_STATE = "MAIN"
 MANAGE_USERS_STATE = "MANAGE_USERS"
 USER_CONTEXT_STATE = "USER_CONTEXT"
 USER_SELECTION_STATE = "USER_SELECTION"
-
+BACK_LABEL = "🔙 Back"
 
 
 async def show_main_menu(update, context, menu_labels, build_menu_markup):
@@ -24,7 +24,7 @@ async def show_main_menu(update, context, menu_labels, build_menu_markup):
     )
 
 
-async def show_manage_users_menu(update, context):
+async def show_manage_users_menu(update, context, menu_labels=None):
     context.user_data["menu_state"] = MANAGE_USERS_STATE
     nav_stack = context.user_data.setdefault("nav_stack", [MAIN_STATE])
     if not nav_stack:
@@ -32,20 +32,24 @@ async def show_manage_users_menu(update, context):
     if nav_stack[-1] != MANAGE_USERS_STATE:
         nav_stack.append(MANAGE_USERS_STATE)
 
-    keyboard = ReplyKeyboardMarkup(
-        [
-            ["View All Users"],
-            ["Assign Task to User"],
-            ["View Tasks of User"],
-            ["🔙 Back"],
-        ],
-        resize_keyboard=True,
-    )
+    if menu_labels is None:
+        from pulse.menu.menu_builder import get_menu_labels_for_permissions
+
+        permissions = context.user_data.get("permissions", [])
+        menu_labels = get_menu_labels_for_permissions(
+            permissions,
+            menu_parent=MANAGE_USERS_STATE,
+        )
+
+    keyboard_rows = [[label] for label in menu_labels]
+    keyboard_rows.append([BACK_LABEL])
+    keyboard = ReplyKeyboardMarkup(keyboard_rows, resize_keyboard=True)
 
     await update.effective_message.reply_text(
         "Manage Users:",
         reply_markup=keyboard,
     )
+
 
 PAGE_SIZE = 5
 
@@ -58,16 +62,19 @@ async def start_user_selection(update, context):
         await update.effective_message.reply_text("No users found.")
         return
 
+    nav_stack = context.user_data.setdefault("nav_stack", [MAIN_STATE])
+    if not nav_stack:
+        nav_stack.append(MAIN_STATE)
+    return_state = nav_stack[-1]
+
     context.user_data["selection_context"] = {
         "type": "users",
         "records": users,
         "page": 0,
         "page_size": PAGE_SIZE,
+        "return_state": return_state,
     }
     context.user_data["menu_state"] = USER_SELECTION_STATE
-    nav_stack = context.user_data.setdefault("nav_stack", [MAIN_STATE])
-    if not nav_stack:
-        nav_stack.append(MAIN_STATE)
     if nav_stack[-1] != USER_SELECTION_STATE:
         nav_stack.append(USER_SELECTION_STATE)
 
@@ -109,7 +116,7 @@ async def show_user_page(update, context):
     if end < len(records):
         keyboard_rows.append(["➡ Next"])
 
-    keyboard_rows.append(["🔙 Back"])
+    keyboard_rows.append([BACK_LABEL])
 
     keyboard = ReplyKeyboardMarkup(keyboard_rows, resize_keyboard=True)
 
@@ -141,7 +148,7 @@ async def handle_user_selection(update, context, text):
         await show_user_page(update, context)
         return True
 
-    if text == "🔙 Back":
+    if text == BACK_LABEL:
         context.user_data.pop("selection_context", None)
         nav_stack = context.user_data.setdefault("nav_stack", [MAIN_STATE])
         if nav_stack and nav_stack[-1] == USER_SELECTION_STATE:
@@ -159,14 +166,18 @@ async def handle_user_selection(update, context, text):
             selected_user = records[index]
 
             context.user_data["selected_user"] = selected_user
-
-            await show_user_context_menu(update, context)
+            context.user_data["user_context_return_state"] = selection.get("return_state", MAIN_STATE)
+            nav_stack = context.user_data.setdefault("nav_stack", [MAIN_STATE])
+            if nav_stack and nav_stack[-1] == USER_SELECTION_STATE:
+                nav_stack.pop()
+            context.user_data["menu_state"] = USER_CONTEXT_STATE
 
             return True
 
     return False
 
-async def show_user_context_menu(update, context):
+
+async def show_user_context_menu(update, context, menu_labels=None):
 
     selected_user = context.user_data.get("selected_user")
 
@@ -174,20 +185,28 @@ async def show_user_context_menu(update, context):
         return
 
     context.user_data["menu_state"] = USER_CONTEXT_STATE
+    nav_stack = context.user_data.setdefault("nav_stack", [MAIN_STATE])
+    if not nav_stack:
+        nav_stack.append(MAIN_STATE)
+    if nav_stack[-1] != USER_CONTEXT_STATE:
+        nav_stack.append(USER_CONTEXT_STATE)
 
     name = selected_user["fields"].get("Name", "Unknown")
 
-    keyboard = ReplyKeyboardMarkup(
-        [
-            ["Assign Task"],
-            ["View Tasks"],
-            ["🔙 Back"],
-        ],
-        resize_keyboard=True,
-    )
+    if menu_labels is None:
+        from pulse.menu.menu_builder import get_menu_labels_for_permissions
+
+        permissions = context.user_data.get("permissions", [])
+        menu_labels = get_menu_labels_for_permissions(
+            permissions,
+            menu_parent=USER_CONTEXT_STATE,
+        )
+
+    keyboard_rows = [[label] for label in menu_labels]
+    keyboard_rows.append([BACK_LABEL])
+    keyboard = ReplyKeyboardMarkup(keyboard_rows, resize_keyboard=True)
 
     await update.effective_message.reply_text(
         f"User: {name}\n\nChoose an action:",
         reply_markup=keyboard,
     )
-

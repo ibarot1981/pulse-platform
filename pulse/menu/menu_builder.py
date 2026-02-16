@@ -20,7 +20,8 @@ PERMISSION_MENU_MAP = {
     "production_complete": "Mark Job Completed",
     "sales_view": "View Sales Data",
     "sales_update": "Update Sales Data",
-    "task_assign": "Assign Tasks",
+    "task_assign_main": "Assign Task",
+    "task_assign_usercontext": "Assign Task",
     "task_close": "My Tasks",
     "user_manage": "Manage Users",
     "reminder_manage": "Reminder Rules",
@@ -28,7 +29,8 @@ PERMISSION_MENU_MAP = {
 
 # Feature flags that can hide menu items even when permission exists.
 PERMISSION_FEATURE_FLAGS = {
-    "task_assign": "ENABLE_TASKS",
+    "task_assign_main": "ENABLE_TASKS",
+    "task_assign_usercontext": "ENABLE_TASKS",
     "task_close": "ENABLE_TASKS",
     "reminder_manage": "ENABLE_REMINDERS",
 }
@@ -60,6 +62,9 @@ def _permissions_metadata():
         metadata[row_id] = {
             "permission_id": permission_id,
             "menu_label": menu_label,
+            "menu_parent": fields.get("Menu_Parent") or "MAIN",
+            "action_type": fields.get("Action_Type") or "RUN_STUB",
+            "action_target": fields.get("Action_Target"),
         }
 
     return metadata
@@ -74,7 +79,18 @@ def _is_permission_enabled(permission_id: str | None) -> bool:
     return bool(getattr(settings, flag_name, False))
 
 
-def get_menu_labels_for_permissions(permissions: Iterable[object]) -> list[str]:
+def get_menu_labels_for_permissions(
+    permissions: Iterable[object],
+    menu_parent: str = "MAIN",
+) -> list[str]:
+    actions = get_menu_actions_for_permissions(permissions, menu_parent=menu_parent)
+    return list(actions.keys())
+
+
+def get_menu_actions_for_permissions(
+    permissions: Iterable[object],
+    menu_parent: str = "MAIN",
+) -> dict[str, dict[str, str | None]]:
     metadata = _permissions_metadata()
     permission_row_ids = []
     seen_row_ids = set()
@@ -84,8 +100,7 @@ def get_menu_labels_for_permissions(permissions: Iterable[object]) -> list[str]:
             continue
         permission_row_ids.append(row_id)
         seen_row_ids.add(row_id)
-    labels: list[str] = []
-    seen_labels = set()
+    actions: dict[str, dict[str, str | None]] = {}
 
     for row_id in permission_row_ids:
         details = metadata.get(row_id)
@@ -94,18 +109,50 @@ def get_menu_labels_for_permissions(permissions: Iterable[object]) -> list[str]:
 
         menu_label = details.get("menu_label")
         permission_id = details.get("permission_id")
+        permission_menu_parent = details.get("menu_parent") or "MAIN"
+        action_type = details.get("action_type") or "RUN_STUB"
+        action_target = details.get("action_target")
 
         if not menu_label:
             continue
+        if permission_menu_parent != menu_parent:
+            continue
         if not _is_permission_enabled(permission_id):
             continue
-        if menu_label in seen_labels:
+        if menu_label in actions:
             continue
 
-        labels.append(menu_label)
-        seen_labels.add(menu_label)
+        actions[menu_label] = {
+            "permission_id": permission_id,
+            "action_type": action_type,
+            "action_target": action_target,
+        }
 
-    return labels
+    return actions
+
+
+def get_enabled_permission_ids(permissions: Iterable[object]) -> set[str]:
+    metadata = _permissions_metadata()
+    permission_ids: set[str] = set()
+
+    for permission in permissions:
+        row_id = _normalize_ref_value(permission)
+        if row_id is None:
+            continue
+
+        details = metadata.get(row_id)
+        if not details:
+            continue
+
+        permission_id = details.get("permission_id")
+        if not permission_id:
+            continue
+        if not _is_permission_enabled(permission_id):
+            continue
+
+        permission_ids.add(permission_id)
+
+    return permission_ids
 
 
 def get_menu_labels_for_user(telegram_id: int | str) -> list[str]:
