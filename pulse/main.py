@@ -10,6 +10,21 @@ from pulse.config import BOT_TOKEN
 from pulse.core.permissions import get_permissions_for_role
 from pulse.core.users import get_user_by_telegram
 from pulse.data.costing_repo import CostingRepo
+from pulse.integrations.production import (
+    ACTION_NEW_PRODUCTION_BATCH,
+    ACTION_PENDING_APPROVALS,
+    AWAITING_APPROVAL_STATE,
+    CONFIRMING_BATCH_STATE,
+    ENTERING_BATCH_QTY_STATE,
+    PENDING_APPROVALS_SELECTION_STATE,
+    SELECTING_BATCH_MODE_STATE,
+    SELECTING_BATCH_TYPE_STATE,
+    SELECTING_PRODUCT_MODEL_STATE,
+    SELECTING_PRODUCT_PARTS_STATE,
+    handle_production_state_text,
+    start_new_production_batch,
+    start_pending_approvals,
+)
 from pulse.menu.menu_builder import (
     build_menu_markup,
     get_enabled_permission_ids,
@@ -257,6 +272,14 @@ async def _execute_menu_action(
         await _start_full_product_ms_list_flow(update, context)
         return True
 
+    if action_type == ACTION_RUN_STUB and action_target == ACTION_NEW_PRODUCTION_BATCH:
+        await start_new_production_batch(update, context)
+        return True
+
+    if action_type == ACTION_RUN_STUB and action_target == ACTION_PENDING_APPROVALS:
+        await start_pending_approvals(update, context)
+        return True
+
     await _handle_stub_action(update, context, permission_key)
     return True
 
@@ -355,6 +378,23 @@ async def fallback_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     state = context.user_data.get("menu_state", MAIN_STATE)
     text = update.effective_message.text
+
+    production_states = {
+        SELECTING_BATCH_MODE_STATE,
+        SELECTING_PRODUCT_MODEL_STATE,
+        SELECTING_PRODUCT_PARTS_STATE,
+        ENTERING_BATCH_QTY_STATE,
+        SELECTING_BATCH_TYPE_STATE,
+        CONFIRMING_BATCH_STATE,
+        AWAITING_APPROVAL_STATE,
+        PENDING_APPROVALS_SELECTION_STATE,
+    }
+    if state in production_states:
+        handled = await handle_production_state_text(update, context, text)
+        if handled:
+            if context.user_data.get("menu_state") not in production_states:
+                await _show_menu_for_state(update, context)
+            return
 
     if state == PRODUCT_MODEL_SELECTION_STATE:
         from pulse.menu.submenu import handle_product_model_selection
