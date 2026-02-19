@@ -7,6 +7,51 @@ from pulse.core.grist_client import GristClient
 
 
 class ProductionRepo:
+    PRODUCT_BATCH_MASTER_SCHEMA = {
+        "batch_no": "Text",
+        "product_model": "Text",
+        "qty": "Numeric",
+        "batch_type": "Text",
+        "include_ms": "Bool",
+        "include_cnc": "Bool",
+        "include_store": "Bool",
+        "created_by": "Ref:Users",
+        "created_date": "DateTime",
+        "start_date": "DateTime",
+        "scheduled_date": "DateTime",
+        "completion_date": "DateTime",
+        "approval_status": "Text",
+        "approval_date": "DateTime",
+        "approved_by": "Ref:Users",
+        "overall_status": "Text",
+        "selected_part_ids": "Text",
+        "notification_users": "Text",
+    }
+
+    PRODUCT_BATCH_MS_SCHEMA = {
+        "batch_id": "Reference:ProductBatchMaster",
+        "product_part": "Text",
+        "material_to_cut": "Text",
+        "post_process": "Text",
+        "required_qty": "Numeric",
+        "status": "Text",
+        "start_date": "DateTime",
+        "scheduled_date": "DateTime",
+        "expected_completion_date": "DateTime",
+        "remarks": "Text",
+    }
+
+    BATCH_STATUS_HISTORY_SCHEMA = {
+        "batch_id": "Reference:ProductBatchMaster",
+        "entity_type": "Text",
+        "entity_id": "Numeric",
+        "old_status": "Text",
+        "new_status": "Text",
+        "updated_by": "Ref:Users",
+        "timestamp": "DateTime",
+        "remarks": "Text",
+    }
+
     def __init__(self):
         self.costing_client = GristClient(PULSE_GRIST_SERVER, COSTING_DOC_ID, COSTING_API_KEY)
         self.pulse_client = GristClient(PULSE_GRIST_SERVER, PULSE_DOC_ID, PULSE_API_KEY)
@@ -157,7 +202,7 @@ class ProductionRepo:
         entity_id: int,
         old_status: str,
         new_status: str,
-        updated_by: str,
+        updated_by,
         remarks: str = "",
     ) -> None:
         self.costing_client.add_records(
@@ -190,6 +235,9 @@ class ProductionRepo:
                 return record
         return None
 
+    def get_all_master_batches(self) -> list[dict]:
+        return self.costing_client.get_records("ProductBatchMaster")
+
     def list_pending_approvals(self) -> list[dict]:
         records = self.costing_client.get_records("ProductBatchMaster")
         pending = []
@@ -203,8 +251,20 @@ class ProductionRepo:
     def update_master(self, batch_id: int, fields: dict) -> None:
         self.costing_client.patch_record("ProductBatchMaster", batch_id, fields)
 
+    def update_master_by_ids(self, batch_ids: list[int], fields: dict) -> None:
+        for batch_id in batch_ids:
+            self.update_master(batch_id, fields)
+
     def update_ms(self, row_id: int, fields: dict) -> None:
         self.costing_client.patch_record("ProductBatchMS", row_id, fields)
+
+    def update_ms_for_batch(self, batch_id: int, fields: dict) -> None:
+        records = self.costing_client.get_records("ProductBatchMS")
+        for record in records:
+            row_batch = self._normalize_ref(record.get("fields", {}).get("batch_id"))
+            if row_batch != batch_id:
+                continue
+            self.update_ms(record.get("id"), fields)
 
     def update_cnc(self, row_id: int, fields: dict) -> None:
         self.costing_client.patch_record("ProductBatchCNC", row_id, fields)
@@ -254,3 +314,77 @@ class ProductionRepo:
                 telegram_ids.append(str(fields.get("Telegram_ID")))
         return telegram_ids
 
+    def get_role_name_by_user_id(self, user_id: str) -> str:
+        users = self.get_users()
+        roles = self.get_roles()
+        role_name_by_id = {r.get("id"): r.get("fields", {}).get("Role_Name") for r in roles}
+
+        for user in users:
+            fields = user.get("fields", {})
+            if fields.get("User_ID") != user_id:
+                continue
+            role_ref = self._normalize_ref(fields.get("Role"))
+            if not role_ref:
+                return ""
+            return str(role_name_by_id.get(role_ref) or "")
+        return ""
+
+    def add_lifecycle_history(self, batch_id: int, stage: str, updated_by, remarks: str = "") -> None:
+        self.add_status_history(batch_id, "Master", batch_id, "", stage, updated_by, remarks)
+
+    def get_costing_user_ref_by_user_id(self, user_id: str) -> int | None:
+        if not user_id:
+            return None
+        records = self.costing_client.get_records("Users")
+        for record in records:
+            fields = record.get("fields", {})
+            if str(fields.get("User_ID") or "") == str(user_id):
+                rec_id = record.get("id")
+                if isinstance(rec_id, int):
+                    return rec_id
+        return None
+
+    def list_batches_pending_schedule_reminder(self, threshold_days: int) -> list[dict]:
+        now = datetime.utcnow()
+        records = self.get_all_master_batches()
+        pending = []
+
+        for record in records:
+            fields = record.get("fields", {})
+            if fields.get("approval_status") != "Approved":
+                continue
+            if fields.get("scheduled_date"):
+                continue
+
+            start_raw = fields.get("start_date")
+            if not start_raw:
+                continue
+
+            try:
+                start_dt = datetime.fromisoformat(str(start_raw).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+
+            if start_dt.tzinfo is not None:
+                start_dt = start_dt.replace(tzinfo=None)
+
+            days_open = (now - start_dt).days
+            if days_open >= threshold_days:
+                pending.append(record)
+
+        return pending
+
+    def get_reminder_rule(self, rule_event_id: str) -> dict:
+        records = self.pulse_client.get_records("Reminder_Rules")
+        for record in records:
+            fields = record.get("fields", {})
+            event_id = (
+                fields.get("Rule_ID")
+                or fields.get("Reminder_ID")
+                or fields.get("Event_ID")
+                or fields.get("Rule_Event")
+            )
+            if event_id != rule_event_id:
+                continue
+            return fields
+        return {}

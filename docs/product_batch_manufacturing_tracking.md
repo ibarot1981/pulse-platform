@@ -1,174 +1,142 @@
-# Product Batch Manufacturing Tracking (Telegram + Grist)
+# Product Batch Manufacturing Tracking (Phase 1)
 
-This document summarizes the implemented workflow for:
+This document reflects the approval-driven implementation for:
 
-- `Manage Production` -> `New Production Batch`
-- `Manage Production` -> `Pending Approvals`
+- `Manage Production -> New Production Batch`
+- `Manage Production -> Approvals -> Production Batch Approval`
 
-## 1. Menu + Permission Integration
+## 1. Master Table Contract (`ProductBatchMaster`)
 
-Added in Pulse doc `Permissions`:
+Required fields:
 
-- `production_new_batch`
-  - `Menu_Label`: `New Production Batch`
-  - `Menu_Parent`: `MANAGE_PRODUCTION`
-  - `Action_Type`: `RUN_STUB`
-  - `Action_Target`: `NEW_PRODUCTION_BATCH`
-- `production_pending_approvals`
-  - `Menu_Label`: `Pending Approvals`
-  - `Menu_Parent`: `MANAGE_PRODUCTION`
-  - `Action_Type`: `RUN_STUB`
-  - `Action_Target`: `PRODUCTION_PENDING_APPROVALS`
+- `created_date`
+- `start_date`
+- `scheduled_date`
+- `completion_date`
+- `approval_status`
+- `approval_date`
+- `approved_by`
 
-Role mappings added in `Role_Permissions`:
+Additional persisted context for delayed child population:
 
-- New Batch: `Production_Supervisor`, `Production_Manager`, `System_Admin`
-- Pending Approvals: `Production_Manager`, `System_Admin`
+- `selected_part_ids` (CSV list of selected part IDs)
 
-## 2. FSM States Added
+Batch creation behavior:
 
-Implemented in `pulse/integrations/production.py`:
+- `created_date` is set at creation time.
+- `approval_status = Pending Approval`
+- `overall_status = Pending Approval`
+- No MS/CNC/Store child rows are created at this stage.
 
-- `selecting_batch_mode`
-- `selecting_product_model`
-- `selecting_product_parts`
-- `entering_batch_qty`
-- `selecting_batch_type`
-- `confirming_batch`
-- `awaiting_approval`
+## 2. Approval FSM + Selection
 
-Additional runtime list state:
+Implemented states in `pulse/integrations/production.py`:
 
 - `pending_approvals_selection`
+- `pending_approvals_confirm`
 
-## 3. Flow Implemented
+Approval menu behavior:
 
-### A) Batch creation by Product Model
+- Lists only `approval_status = Pending Approval` batches.
+- Supports single value (`2`) and comma-separated selection (`1,3`).
+- Requires explicit confirmation (`Yes`/`No`) before approval.
 
-1. Select mode `By Product Model`.
-2. Select model from paginated list.
-3. Enter quantity (validated against `ProductionConfig.min_batch_qty` / `max_batch_qty`).
-4. Confirm summary.
-5. Select batch type (`M-C-S`, `MS`, `CNC`, `STORE`).
-6. Master + child rows are created.
+## 3. Approval Service Behavior
 
-### B) Batch creation by Product Part
+On approval confirmation:
 
-1. Select mode `By Product Part`.
-2. Select model.
-3. Select parts (comma-separated multi-select, repeatable).
-4. Enter quantity (config-validated).
-5. Confirm summary.
-6. Select batch type.
-7. Master + child rows are created for selected parts only.
+- `approval_status = Approved`
+- `approval_date = now`
+- `start_date = now`
+- `approved_by = approver user_id`
+- `overall_status = Schedule Pending`
 
-## 4. Batch Number Generation
+History log entries are added in `BatchStatusHistory` for:
 
-Implemented format:
+- `Batch Approved`
+- status transitions (`Pending Approval -> Approved`, `... -> Schedule Pending`)
 
-- `MMMYY-MODELCODE-MCS-XXX`
+## 4. Child Population Rule (Phase 1: MS Only)
 
-Rules:
+Child rows are created only after approval.
 
-- month-year from current UTC time (e.g. `FEB26`)
-- process code from include flags (`M`, `C`, `S`)
-- running sequence per month from existing `ProductBatchMaster.batch_no`
+MS row generation:
 
-## 5. Costing Grist Tables Created
+- Source: `ProductPartMSList`
+- Scope: selected parts captured in `selected_part_ids` (or full model fallback)
+- Grouping key: `Batch + Product Part + Material To Cut + Post Process`
+- `required_qty = QtyNos * batch_qty` (aggregated by grouping key)
+- `start_date` inherited from approved master `start_date`
+- `status = Schedule Pending`
 
-In Costing doc (`COSTING_DOC_ID`), created:
+No CNC/Store child population occurs in Phase 1 approval flow.
 
-- `ProductionConfig`
-  - `min_batch_qty` (Numeric)
-  - `max_batch_qty` (Numeric)
-- `ProductBatchMaster`
-  - `batch_no`, `product_model`, `qty`, `batch_type`
-  - `include_ms`, `include_cnc`, `include_store`
-  - `created_by`, `created_date`
-  - `approval_status`, `overall_status`
-  - `notification_users`
-- `ProductBatchMS`
-  - `batch_id`, `product_part`, `material_to_cut`, `required_qty`
-  - `status`, `scheduled_date`, `expected_completion_date`, `remarks`
-- `ProductBatchCNC`
-  - `batch_id`, `product_part`, `sheet_gauge`, `sheet_size`, `required_qty`
-  - `status`, `nest_status`, `scheduled_date`, `expected_completion_date`, `remarks`
-- `ProductBatchStore`
-  - `batch_id`, `item_name`, `source_type`, `required_qty`
-  - `status`, `scheduled_date`, `expected_completion_date`, `remarks`
-- `BatchStatusHistory`
-  - `batch_id`, `entity_type`, `entity_id`
-  - `old_status`, `new_status`, `updated_by`, `timestamp`, `remarks`
+## 5. Scheduling Propagation (Master -> MS)
 
-Seeded config:
+Service added:
 
-- `min_batch_qty=1`
-- `max_batch_qty=1000`
+- `set_master_scheduled_date(context, batch_id, scheduled_date_iso, updated_by, remarks="")`
 
-## 6. Child Population Logic
+Behavior:
 
-Implemented in `pulse/integrations/production.py` + `pulse/data/production_repo.py`.
+- Updates `ProductBatchMaster.scheduled_date`
+- Sets master `overall_status = Scheduled`
+- Propagates `scheduled_date` to all `ProductBatchMS` rows for that batch
+- Writes lifecycle/status history entries (`Scheduled`)
 
-- MS:
-  - Source: `ProductPartMSList`
-  - Grouping key represented as row-per-source record
-  - `required_qty = QtyNos * batch_qty`
-  - `material_to_cut` resolved from `MasterMaterial`
-- CNC:
-  - Source: `ProductPartCNCList`
-  - `sheet_gauge` from `CNCPartsMaster.Thickness`
-  - `sheet_size` kept blank for now (pending future logic)
-  - `required_qty = QtyNos * batch_qty`
-- Store:
-  - Source: model-linked store slips (`ProductPartStoresList` -> `StoresIssueSlipMasterLog`)
-  - `required_qty = Qty * batch_qty`
-  - `source_type` kept blank for now (pending future logic)
+## 6. Notification Events
 
-## 7. Approval + Status Handling
+Implemented event triggers:
 
-Approval:
+- `production_batch_created`
+  - Trigger: batch creation
+  - Uses `Notification_Subscriptions` via dispatcher
+- `production_batch_approved`
+  - Trigger: batch approval
+  - Uses `Notification_Subscriptions` via dispatcher
 
-- Only `Production_Manager` (`R02`) can approve in handler logic.
-- On approval:
-  - `approval_status = Approved`
-  - `overall_status = Schedule Pending`
-  - history entries inserted in `BatchStatusHistory`
+No users are hardcoded in code paths.
 
-Master auto recalculation (`recalculate_master_overall_status`):
+## 7. Reminder Integration Hook
 
-- If approval pending -> `Pending Approval`
-- Else:
-  - all child statuses in `Done/Completed` -> `Completed`
-  - any child in `In Progress` -> `In Progress`
-  - all child in `Schedule Pending` -> `Schedule Pending`
+Implemented in `pulse/reminders/engine.py`:
 
-Child update service (`update_child_status`):
+- `run_production_batch_reminder_checks(telegram_bot)`
 
-- blocks updates before approval
-- updates child row
-- writes history
-- recalculates master status
-- sends notifications
+Rule:
 
-## 8. Notification Integration
+- `scheduled_date is NULL`
+- `approval_status = Approved`
+- `current_date - start_date >= threshold_days`
 
-Added events in Pulse doc `Notification_Events`:
+Event fired:
 
-- `batch_approved`
-- `batch_status_changed`
+- `production_batch_not_scheduled_reminder`
 
-Subscriptions added for roles:
+Threshold source:
 
-- `Production_Manager`
-- `System_Admin`
+- `Reminder_Rules` lookup (`production_batch_not_scheduled_reminder`)
+- falls back to `2` days if not configured
 
-Also sends direct notification to batch creator (lookup from Pulse `Users` table).
+## 8. Lifecycle Tracking + Durations
 
-## 9. Files Added/Updated
+Lifecycle events now logged in status history:
 
-- Added: `pulse/data/production_repo.py`
-- Updated: `pulse/integrations/production.py`
-- Updated: `pulse/main.py`
-- Updated: `pulse/core/grist_client.py`
-- Updated: `pulse/notifications/subscriptions.py`
+- `Batch Created`
+- `Batch Approved`
+- `Scheduled`
+- `Completed` (when master recalculates to completed)
 
+Date derivations now available from master table:
+
+- `planning_duration = start_date - created_date`
+- `production_duration = completion_date - start_date`
+- `total_duration = completion_date - created_date`
+
+## 9. Files Updated
+
+- `pulse/data/production_repo.py`
+- `pulse/integrations/production.py`
+- `pulse/reminders/engine.py`
+- `pulse/main.py`
+- `docs/product_batch_manufacturing_tracking.md`

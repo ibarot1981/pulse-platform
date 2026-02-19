@@ -16,6 +16,7 @@ from pulse.integrations.production import (
     AWAITING_APPROVAL_STATE,
     CONFIRMING_BATCH_STATE,
     ENTERING_BATCH_QTY_STATE,
+    PENDING_APPROVALS_CONFIRM_STATE,
     PENDING_APPROVALS_SELECTION_STATE,
     SELECTING_BATCH_MODE_STATE,
     SELECTING_BATCH_TYPE_STATE,
@@ -388,6 +389,7 @@ async def fallback_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         CONFIRMING_BATCH_STATE,
         AWAITING_APPROVAL_STATE,
         PENDING_APPROVALS_SELECTION_STATE,
+        PENDING_APPROVALS_CONFIRM_STATE,
     }
     if state in production_states:
         handled = await handle_production_state_text(update, context, text)

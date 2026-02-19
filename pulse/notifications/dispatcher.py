@@ -2,9 +2,9 @@ from pulse.notifications.subscriptions import get_subscribers
 from pulse.core.logger import log_event
 
 
-async def dispatch_event(event_type, message, telegram_bot):
+async def dispatch_event(event_type, message, telegram_bot, context=None):
 
-    subscribers = get_subscribers(event_type)
+    subscribers = get_subscribers(event_type, context=context)
 
     for user in subscribers:
         try:
