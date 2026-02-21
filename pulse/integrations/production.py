@@ -5,7 +5,7 @@ from datetime import datetime
 from telegram import ReplyKeyboardMarkup
 
 from pulse.data.production_repo import ProductionRepo
-from pulse.menu.submenu import BACK_LABEL, MAIN_STATE
+from pulse.menu.submenu import BACK_LABEL, MAIN_MENU_LABEL, MAIN_STATE, set_main_menu_state
 from pulse.notifications.dispatcher import dispatch_event
 from pulse.settings import settings
 
@@ -28,6 +28,7 @@ _MODE_BY_MODEL = "By Product Model"
 _MODE_BY_PART = "By Product Part"
 _YES = "Yes"
 _NO = "No"
+_REJECT = "Reject"
 
 _TYPE_COMPLETE = "New Complete Batch (M-C-S)"
 _TYPE_MS = "MS Only"
@@ -72,6 +73,10 @@ def _build_keyboard(rows: list[list[str]]):
 
 
 async def _reply(update, text: str, rows: list[list[str]] | None = None):
+    if rows:
+        has_main_menu = any(row and row[0] == MAIN_MENU_LABEL for row in rows)
+        if not has_main_menu:
+            rows = rows + [[MAIN_MENU_LABEL]]
     markup = _build_keyboard(rows) if rows else None
     await update.effective_message.reply_text(text, reply_markup=markup)
 
@@ -396,7 +401,7 @@ async def _create_batch_from_flow(update, context):
         context={"batch_id": master_id},
     )
 
-    context.user_data["menu_state"] = AWAITING_APPROVAL_STATE
+    set_main_menu_state(context)
     await _reply(update, f"Batch created: {batch_no}\nStatus: Pending Approval")
     _clear_flow(context)
 
@@ -420,6 +425,7 @@ async def start_pending_approvals(update, context) -> None:
     repo = ProductionRepo()
     pending = repo.list_pending_approvals()
     if not pending:
+        set_main_menu_state(context)
         await _reply(update, "No pending approvals found.")
         return
 
@@ -465,9 +471,13 @@ async def _show_pending_approval_confirmation(update, context) -> None:
     for record in selected_records:
         fields = record.get("fields", {})
         lines.append(f"- {fields.get('batch_no', '')}")
+    lines.append("")
+    lines.append("Choose action:")
+    lines.append("- Yes = Approve")
+    lines.append("- Reject = Reject selected batches")
 
     context.user_data["menu_state"] = PENDING_APPROVALS_CONFIRM_STATE
-    await _reply(update, "\n".join(lines), [[_YES], [_NO], [BACK_LABEL]])
+    await _reply(update, "\n".join(lines), [[_YES], [_REJECT], [_NO], [BACK_LABEL]])
 
 
 def recalculate_master_overall_status(repo: ProductionRepo, batch_id: int, updated_by) -> str:
@@ -580,6 +590,62 @@ async def approve_batches_by_ids(update, context, batch_ids: list[int]) -> list[
             )
 
     return approved_batch_numbers
+
+
+def reject_batch_service(repo: ProductionRepo, batch_id: int, rejected_by) -> dict:
+    record = repo.get_master_by_id(batch_id)
+    if not record:
+        raise ValueError("Batch not found.")
+
+    fields = record.get("fields", {})
+    if fields.get("approval_status") != "Pending Approval":
+        return record
+
+    now_iso = _now_iso()
+    old_approval = fields.get("approval_status") or ""
+    old_overall = fields.get("overall_status") or ""
+
+    repo.update_master(
+        batch_id,
+        {
+            "approval_status": "Rejected",
+            "approval_date": now_iso,
+            "approved_by": rejected_by,
+            "overall_status": "Batch Rejected",
+        },
+    )
+    repo.add_status_history(batch_id, "Master", batch_id, old_approval, "Rejected", rejected_by, "Batch rejected")
+    if old_overall != "Batch Rejected":
+        repo.add_status_history(batch_id, "Master", batch_id, old_overall, "Batch Rejected", rejected_by, "")
+    repo.add_lifecycle_history(batch_id, "Batch Rejected", rejected_by, "Batch rejected by manager/admin")
+
+    return repo.get_master_by_id(batch_id) or record
+
+
+async def reject_batches_by_ids(update, context, batch_ids: list[int]) -> list[str]:
+    if not _is_production_manager(context):
+        await _reply(update, "Only Production Manager or System Admin can reject batches.")
+        return []
+
+    repo = ProductionRepo()
+    user = context.user_data.get("user", {})
+    rejected_by = repo.get_costing_user_ref_by_user_id(user.get("user_id", ""))
+    rejected_batch_numbers = []
+
+    for batch_id in batch_ids:
+        updated = reject_batch_service(repo, batch_id, rejected_by)
+        fields = updated.get("fields", {})
+        batch_no = fields.get("batch_no", "")
+        if batch_no:
+            rejected_batch_numbers.append(batch_no)
+            await _notify_event(
+                context.bot,
+                "production_batch_rejected",
+                f"Batch rejected: {batch_no} | Status: Batch Rejected",
+                context={"batch_id": batch_id},
+            )
+
+    return rejected_batch_numbers
 
 
 async def set_master_scheduled_date(
@@ -862,13 +928,18 @@ async def handle_production_state_text(update, context, text: str) -> bool:
             context.user_data["menu_state"] = PENDING_APPROVALS_SELECTION_STATE
             await _show_pending_approvals_page(update, context)
             return True
-        if text != _YES:
-            await _reply(update, "Select Yes or No.", [[_YES], [_NO], [BACK_LABEL]])
+        if text not in (_YES, _REJECT):
+            await _reply(update, "Select Yes, Reject, or No.", [[_YES], [_REJECT], [_NO], [BACK_LABEL]])
             return True
 
         confirm_data = context.user_data.get("pending_approvals_confirm", {})
         selected_ids = confirm_data.get("selected_ids", [])
-        approved_batch_numbers = await approve_batches_by_ids(update, context, selected_ids)
+        if text == _YES:
+            approved_batch_numbers = await approve_batches_by_ids(update, context, selected_ids)
+            rejected_batch_numbers = []
+        else:
+            rejected_batch_numbers = await reject_batches_by_ids(update, context, selected_ids)
+            approved_batch_numbers = []
 
         context.user_data.pop("pending_approvals_confirm", None)
         selection = context.user_data.get("pending_approvals_selection", {})
@@ -877,15 +948,15 @@ async def handle_production_state_text(update, context, text: str) -> bool:
 
         if approved_batch_numbers:
             await _reply(update, f"Approved: {', '.join(approved_batch_numbers)}")
+        if rejected_batch_numbers:
+            await _reply(update, f"Rejected: {', '.join(rejected_batch_numbers)}")
 
+        context.user_data.pop("pending_approvals_selection", None)
+        set_main_menu_state(context)
         if not selection["records"]:
-            context.user_data["menu_state"] = _target_return_state(context)
-            context.user_data.pop("pending_approvals_selection", None)
             await _reply(update, "No pending approvals remaining.")
             return True
-
-        context.user_data["menu_state"] = PENDING_APPROVALS_SELECTION_STATE
-        await _show_pending_approvals_page(update, context)
+        await _reply(update, "Approval updated. Returning to main menu.")
         return True
 
     if state == AWAITING_APPROVAL_STATE:

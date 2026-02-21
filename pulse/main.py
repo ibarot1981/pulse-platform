@@ -34,9 +34,11 @@ from pulse.menu.menu_builder import (
 )
 from pulse.menu.submenu import (
     BACK_LABEL,
+    MAIN_MENU_LABEL,
     MAIN_STATE,
     MANAGE_USERS_STATE,
     PRODUCT_MODEL_SELECTION_STATE,
+    set_main_menu_state,
     USER_CONTEXT_STATE,
     USER_SELECTION_STATE,
     show_dynamic_submenu,
@@ -226,23 +228,27 @@ async def _handle_selected_product_model(update: Update, context: ContextTypes.D
     if not model_code:
         return
 
-    await _reply_text(update, f"Preparing full MS list PDF for {model_code}...")
-
     try:
-        repo = CostingRepo()
-        table_rows = repo.get_full_ms_table_rows_for_product_model(model_code)
-    except Exception:
-        await _reply_text(update, f"Unable to fetch MS rows for {model_code}.")
-        return
+        await _reply_text(update, f"Preparing full MS list PDF for {model_code}...")
 
-    if not table_rows:
-        await _reply_text(update, f"No MS rows found for {model_code}.")
-        return
+        try:
+            repo = CostingRepo()
+            table_rows = repo.get_full_ms_table_rows_for_product_model(model_code)
+        except Exception:
+            await _reply_text(update, f"Unable to fetch MS rows for {model_code}.")
+            return
 
-    try:
-        await _send_full_product_ms_pdf(update, model_code, table_rows)
-    except Exception:
-        await _reply_text(update, f"Failed to generate PDF for {model_code}.")
+        if not table_rows:
+            await _reply_text(update, f"No MS rows found for {model_code}.")
+            return
+
+        try:
+            await _send_full_product_ms_pdf(update, model_code, table_rows)
+        except Exception:
+            await _reply_text(update, f"Failed to generate PDF for {model_code}.")
+            return
+    finally:
+        set_main_menu_state(context)
 
 
 async def _execute_menu_action(
@@ -379,6 +385,11 @@ async def fallback_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     state = context.user_data.get("menu_state", MAIN_STATE)
     text = update.effective_message.text
+
+    if text == MAIN_MENU_LABEL:
+        set_main_menu_state(context)
+        await _show_menu_for_state(update, context)
+        return
 
     production_states = {
         SELECTING_BATCH_MODE_STATE,

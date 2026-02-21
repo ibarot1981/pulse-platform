@@ -7,6 +7,12 @@ USER_CONTEXT_STATE = "USER_CONTEXT"
 USER_SELECTION_STATE = "USER_SELECTION"
 PRODUCT_MODEL_SELECTION_STATE = "PRODUCT_MODEL_SELECTION"
 BACK_LABEL = "🔙 Back"
+MAIN_MENU_LABEL = "🏠 Main Menu"
+
+
+def set_main_menu_state(context) -> None:
+    context.user_data["menu_state"] = MAIN_STATE
+    context.user_data["nav_stack"] = [MAIN_STATE]
 
 
 async def show_main_menu(update, context, menu_labels, build_menu_markup):
@@ -39,6 +45,7 @@ async def show_dynamic_submenu(update, context, state: str, menu_labels: list[st
 
     keyboard_rows = [[label] for label in menu_labels]
     keyboard_rows.append([BACK_LABEL])
+    keyboard_rows.append([MAIN_MENU_LABEL])
     keyboard = ReplyKeyboardMarkup(keyboard_rows, resize_keyboard=True)
 
     await update.effective_message.reply_text(
@@ -66,6 +73,7 @@ async def show_manage_users_menu(update, context, menu_labels=None):
 
     keyboard_rows = [[label] for label in menu_labels]
     keyboard_rows.append([BACK_LABEL])
+    keyboard_rows.append([MAIN_MENU_LABEL])
     keyboard = ReplyKeyboardMarkup(keyboard_rows, resize_keyboard=True)
 
     await update.effective_message.reply_text(
@@ -140,6 +148,7 @@ async def show_user_page(update, context):
         keyboard_rows.append(["➡ Next"])
 
     keyboard_rows.append([BACK_LABEL])
+    keyboard_rows.append([MAIN_MENU_LABEL])
 
     keyboard = ReplyKeyboardMarkup(keyboard_rows, resize_keyboard=True)
 
@@ -227,6 +236,7 @@ async def show_user_context_menu(update, context, menu_labels=None):
 
     keyboard_rows = [[label] for label in menu_labels]
     keyboard_rows.append([BACK_LABEL])
+    keyboard_rows.append([MAIN_MENU_LABEL])
     keyboard = ReplyKeyboardMarkup(keyboard_rows, resize_keyboard=True)
 
     await update.effective_message.reply_text(
@@ -287,6 +297,7 @@ async def show_product_model_page(update, context):
     if end < len(records):
         keyboard_rows.append(["➡ Next"])
     keyboard_rows.append([BACK_LABEL])
+    keyboard_rows.append([MAIN_MENU_LABEL])
 
     keyboard = ReplyKeyboardMarkup(keyboard_rows, resize_keyboard=True)
     await update.effective_message.reply_text(

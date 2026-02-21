@@ -1,0 +1,24 @@
+ProductionBatchMaster must have status columns for each Batch Type
+    -> MS status
+    -> CNC status
+    -> Store status
+    -> MS Cut List PDF
+    -> CNC Cut List PDF
+    -> Stores Issue Slip PDF
+
+
+Each child satus should be propogated to the top Batch - Batch Type Status. e.g. if one status of child table in Pending and rest are Done, still the top Batch Status is shown as Pending. Only when all child status of the Batch Type is Done, the top Batch status gets marked as Done.
+Alternatively, if the Top Batch status is marked as Done, then individually all Child table entries for that Batch in the Batch type is marked as Done.
+
+
+
+
+Under "Manage Production", the submenu shows should Show "Manage Batch"
+So the flow looks like :-
+Manage Production -> Manage Batch   -> New Batch
+                                    -> Assign Batch Schedule
+                                    -> view Batch status
+                                    -> View Detailed Batch Report
+                                    -> Update Batch status
+                                        -> Update By Batch 
+                                        -> Update By 
