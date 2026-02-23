@@ -2,7 +2,7 @@ from pulse.notifications.subscriptions import get_subscribers
 from pulse.core.logger import log_event
 
 
-async def dispatch_event(event_type, message, telegram_bot, context=None):
+async def dispatch_event(event_type, message, telegram_bot, context=None, reply_markup=None):
 
     subscribers = get_subscribers(event_type, context=context)
 
@@ -10,7 +10,8 @@ async def dispatch_event(event_type, message, telegram_bot, context=None):
         try:
             await telegram_bot.send_message(
                 chat_id=user["telegram_id"],
-                text=message
+                text=message,
+                reply_markup=reply_markup,
             )
 
             log_event(

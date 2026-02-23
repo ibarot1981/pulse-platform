@@ -4,18 +4,21 @@ import tempfile
 from datetime import datetime
 
 from telegram import ReplyKeyboardRemove, Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from pulse.config import BOT_TOKEN
 from pulse.core.permissions import get_permissions_for_role
 from pulse.core.users import get_user_by_telegram
 from pulse.data.costing_repo import CostingRepo
 from pulse.integrations.production import (
+    ACTION_MY_MS_JOBS,
     ACTION_NEW_PRODUCTION_BATCH,
     ACTION_PENDING_APPROVALS,
     AWAITING_APPROVAL_STATE,
     CONFIRMING_BATCH_STATE,
     ENTERING_BATCH_QTY_STATE,
+    MY_MS_JOBS_CONFIRM_STATE,
+    MY_MS_JOBS_SELECTION_STATE,
     PENDING_APPROVALS_CONFIRM_STATE,
     PENDING_APPROVALS_SELECTION_STATE,
     SELECTING_BATCH_MODE_STATE,
@@ -23,6 +26,8 @@ from pulse.integrations.production import (
     SELECTING_PRODUCT_MODEL_STATE,
     SELECTING_PRODUCT_PARTS_STATE,
     handle_production_state_text,
+    handle_production_callback,
+    start_my_ms_jobs,
     start_new_production_batch,
     start_pending_approvals,
 )
@@ -287,6 +292,10 @@ async def _execute_menu_action(
         await start_pending_approvals(update, context)
         return True
 
+    if action_type == ACTION_RUN_STUB and action_target == ACTION_MY_MS_JOBS:
+        await start_my_ms_jobs(update, context)
+        return True
+
     await _handle_stub_action(update, context, permission_key)
     return True
 
@@ -401,6 +410,8 @@ async def fallback_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         AWAITING_APPROVAL_STATE,
         PENDING_APPROVALS_SELECTION_STATE,
         PENDING_APPROVALS_CONFIRM_STATE,
+        MY_MS_JOBS_SELECTION_STATE,
+        MY_MS_JOBS_CONFIRM_STATE,
     }
     if state in production_states:
         handled = await handle_production_state_text(update, context, text)
@@ -507,11 +518,27 @@ async def fallback_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await _reply_text(update, "Unknown command. Use /start to open your menu.")
 
 
+async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await load_user_access(update, context):
+        query = update.callback_query
+        if query:
+            await query.answer()
+        return
+
+    if await handle_production_callback(update, context):
+        return
+
+    query = update.callback_query
+    if query:
+        await query.answer("Unsupported action.")
+
+
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
 
+    app.add_handler(CallbackQueryHandler(callback_router))
     app.add_handler(MessageHandler(filters.COMMAND, fallback_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, fallback_text))
 
