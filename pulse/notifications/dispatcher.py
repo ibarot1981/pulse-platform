@@ -2,16 +2,34 @@ from pulse.notifications.subscriptions import get_subscribers
 from pulse.core.logger import log_event
 
 
-async def dispatch_event(event_type, message, telegram_bot, context=None, reply_markup=None):
+async def dispatch_event(
+    event_type,
+    message,
+    telegram_bot,
+    context=None,
+    reply_markup=None,
+    recipient_renderer=None,
+):
 
     subscribers = get_subscribers(event_type, context=context)
 
     for user in subscribers:
         try:
+            rendered_message = message
+            rendered_markup = reply_markup
+            if recipient_renderer:
+                rendered = recipient_renderer(user) or {}
+                if rendered.get("skip"):
+                    continue
+                if "message" in rendered:
+                    rendered_message = rendered["message"]
+                if "reply_markup" in rendered:
+                    rendered_markup = rendered["reply_markup"]
+
             await telegram_bot.send_message(
                 chat_id=user["telegram_id"],
-                text=message,
-                reply_markup=reply_markup,
+                text=rendered_message,
+                reply_markup=rendered_markup,
             )
 
             log_event(

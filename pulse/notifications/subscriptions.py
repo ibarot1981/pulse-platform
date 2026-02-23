@@ -87,6 +87,8 @@ def _add_user_if_valid(
     user: dict | None,
     recipients: list[dict],
     seen_telegram_ids: set[str],
+    role_name_by_id: dict[int, str] | None = None,
+    role_id_by_id: dict[int, str] | None = None,
 ) -> None:
     if not user:
         return
@@ -97,7 +99,22 @@ def _add_user_if_valid(
     user_id = _to_str(fields.get("User_ID")).strip()
     if not telegram_id or not user_id or telegram_id in seen_telegram_ids:
         return
-    recipients.append({"user_id": user_id, "telegram_id": telegram_id})
+    role_ref = _normalize_ref_value(fields.get("Role"))
+    role_name = ""
+    role_id = ""
+    if isinstance(role_ref, int) and role_name_by_id:
+        role_name = _to_str(role_name_by_id.get(role_ref)).strip()
+    if isinstance(role_ref, int) and role_id_by_id:
+        role_id = _to_str(role_id_by_id.get(role_ref)).strip()
+    recipients.append(
+        {
+            "user_id": user_id,
+            "telegram_id": telegram_id,
+            "role_id": role_id,
+            "role_ref_id": role_ref if isinstance(role_ref, int) else None,
+            "role_name": role_name,
+        }
+    )
     seen_telegram_ids.add(telegram_id)
 
 
@@ -105,6 +122,8 @@ def _get_subscription_recipients(
     event_type: str,
     event_record: dict | None,
     users: list[dict],
+    role_name_by_id: dict[int, str] | None = None,
+    role_id_by_id: dict[int, str] | None = None,
 ) -> list[dict]:
     subs = pulse_client.get_records("Notification_Subscriptions")
     users_by_user_id, users_by_record_id = _build_users_index(users)
@@ -136,7 +155,13 @@ def _get_subscription_recipients(
         elif user_value not in (None, "", 0, "0"):
             explicit_user = users_by_user_id.get(_to_str(user_value))
         if explicit_user:
-            _add_user_if_valid(explicit_user, recipients, seen_telegram_ids)
+            _add_user_if_valid(
+                explicit_user,
+                recipients,
+                seen_telegram_ids,
+                role_name_by_id=role_name_by_id,
+                role_id_by_id=role_id_by_id,
+            )
             continue
 
         if not isinstance(role_value, int):
@@ -147,12 +172,23 @@ def _get_subscription_recipients(
             user_role = _normalize_ref_value(user_fields.get("Role"))
             if user_role != role_value:
                 continue
-            _add_user_if_valid(user, recipients, seen_telegram_ids)
+            _add_user_if_valid(
+                user,
+                recipients,
+                seen_telegram_ids,
+                role_name_by_id=role_name_by_id,
+                role_id_by_id=role_id_by_id,
+            )
 
     return recipients
 
 
-def _get_context_role_recipients(context: dict | None, users: list[dict]) -> list[dict]:
+def _get_context_role_recipients(
+    context: dict | None,
+    users: list[dict],
+    role_name_by_id: dict[int, str] | None = None,
+    role_id_by_id: dict[int, str] | None = None,
+) -> list[dict]:
     if not context:
         return []
     role_names = context.get("recipient_roles")
@@ -175,14 +211,31 @@ def _get_context_role_recipients(context: dict | None, users: list[dict]) -> lis
         user_role = _normalize_ref_value(user_fields.get("Role"))
         if user_role not in role_ids:
             continue
-        _add_user_if_valid(user, recipients, seen_telegram_ids)
+        _add_user_if_valid(
+            user,
+            recipients,
+            seen_telegram_ids,
+            role_name_by_id=role_name_by_id,
+            role_id_by_id=role_id_by_id,
+        )
     return recipients
 
 
 def get_subscribers(event_type: str, context: dict | None = None) -> list[dict]:
     events = pulse_client.get_records("Notification_Events")
     users = pulse_client.get_records("Users")
+    roles = pulse_client.get_records("Roles")
     users_by_user_id, _ = _build_users_index(users)
+    role_name_by_id = {
+        row.get("id"): _to_str(row.get("fields", {}).get("Role_Name")).strip()
+        for row in roles
+        if isinstance(row.get("id"), int)
+    }
+    role_id_by_id = {
+        row.get("id"): _to_str(row.get("fields", {}).get("Role_ID")).strip()
+        for row in roles
+        if isinstance(row.get("id"), int)
+    }
     event_record = _find_event_record(events, event_type)
     recipient_mode = _get_event_recipient_mode(event_record)
 
@@ -192,10 +245,22 @@ def get_subscribers(event_type: str, context: dict | None = None) -> list[dict]:
     if recipient_mode in (RECIPIENT_MODE_OWNER_ONLY, RECIPIENT_MODE_OWNER_PLUS_SUBSCRIBERS):
         owner_user_id = _resolve_owner_user_id(context)
         owner_user = users_by_user_id.get(owner_user_id)
-        _add_user_if_valid(owner_user, recipients, seen_telegram_ids)
+        _add_user_if_valid(
+            owner_user,
+            recipients,
+            seen_telegram_ids,
+            role_name_by_id=role_name_by_id,
+            role_id_by_id=role_id_by_id,
+        )
 
     if recipient_mode in (RECIPIENT_MODE_SUBSCRIBERS_ONLY, RECIPIENT_MODE_OWNER_PLUS_SUBSCRIBERS):
-        subscription_recipients = _get_subscription_recipients(event_type, event_record, users)
+        subscription_recipients = _get_subscription_recipients(
+            event_type,
+            event_record,
+            users,
+            role_name_by_id=role_name_by_id,
+            role_id_by_id=role_id_by_id,
+        )
         for user in subscription_recipients:
             telegram_id = _to_str(user.get("telegram_id"))
             if not telegram_id or telegram_id in seen_telegram_ids:
@@ -203,7 +268,12 @@ def get_subscribers(event_type: str, context: dict | None = None) -> list[dict]:
             recipients.append(user)
             seen_telegram_ids.add(telegram_id)
 
-    context_role_recipients = _get_context_role_recipients(context, users)
+    context_role_recipients = _get_context_role_recipients(
+        context,
+        users,
+        role_name_by_id=role_name_by_id,
+        role_id_by_id=role_id_by_id,
+    )
     for user in context_role_recipients:
         telegram_id = _to_str(user.get("telegram_id"))
         if not telegram_id or telegram_id in seen_telegram_ids:

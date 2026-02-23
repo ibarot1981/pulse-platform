@@ -41,6 +41,8 @@ _TYPE_MS = "MS Only"
 _TYPE_CNC = "CNC Only"
 _TYPE_STORE = "Store Only"
 _APPROVAL_CB_PREFIX = "prodappr"
+_APPROVER_ROLE_IDS = {"R01", "R02"}
+_APPROVER_ROLE_NAMES = {"Production_Manager", "System_Admin"}
 
 
 def _normalize_ref(value):
@@ -362,8 +364,16 @@ async def _notify_event(
     message: str,
     context: dict | None = None,
     reply_markup=None,
+    recipient_renderer=None,
 ) -> None:
-    await dispatch_event(event_type, message, telegram_bot, context=context, reply_markup=reply_markup)
+    await dispatch_event(
+        event_type,
+        message,
+        telegram_bot,
+        context=context,
+        reply_markup=reply_markup,
+        recipient_renderer=recipient_renderer,
+    )
 
 
 def _approval_callback_data(action: str, batch_id: int) -> str:
@@ -393,6 +403,25 @@ def _approval_open_keyboard(batch_id: int) -> InlineKeyboardMarkup:
             ]
         ]
     )
+
+
+def _is_approval_actor_subscriber(recipient: dict) -> bool:
+    role_id = str(recipient.get("role_id") or "").strip()
+    role_name = str(recipient.get("role_name") or "").strip()
+    return role_id in _APPROVER_ROLE_IDS or role_name in _APPROVER_ROLE_NAMES
+
+
+def _batch_created_recipient_renderer(batch_id: int):
+    approval_markup = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("Click Here to Approve", callback_data=_approval_callback_data("open", batch_id))]]
+    )
+
+    def _render(recipient: dict) -> dict:
+        if _is_approval_actor_subscriber(recipient):
+            return {"reply_markup": approval_markup}
+        return {"reply_markup": None}
+
+    return _render
 
 
 def _target_return_state(context):
@@ -510,9 +539,7 @@ async def _create_batch_from_flow(update, context):
         "production_batch_created",
         f"Batch created: {batch_no} | Model: {flow['model_code']} | Qty: {flow['batch_qty']} | Approval: Pending",
         context={"batch_id": master_id},
-        reply_markup=InlineKeyboardMarkup(
-            [[InlineKeyboardButton("Click Here to Approve", callback_data=_approval_callback_data("open", master_id))]]
-        ),
+        recipient_renderer=_batch_created_recipient_renderer(master_id),
     )
 
     set_main_menu_state(context)
