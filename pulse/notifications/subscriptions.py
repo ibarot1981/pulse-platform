@@ -152,6 +152,33 @@ def _get_subscription_recipients(
     return recipients
 
 
+def _get_context_role_recipients(context: dict | None, users: list[dict]) -> list[dict]:
+    if not context:
+        return []
+    role_names = context.get("recipient_roles")
+    if not isinstance(role_names, list) or not role_names:
+        return []
+    normalized = {str(name).strip() for name in role_names if str(name).strip()}
+    if not normalized:
+        return []
+
+    roles = pulse_client.get_records("Roles")
+    role_ids = {
+        row.get("id")
+        for row in roles
+        if str(row.get("fields", {}).get("Role_Name") or "").strip() in normalized
+    }
+    recipients = []
+    seen_telegram_ids: set[str] = set()
+    for user in users:
+        user_fields = user.get("fields", {})
+        user_role = _normalize_ref_value(user_fields.get("Role"))
+        if user_role not in role_ids:
+            continue
+        _add_user_if_valid(user, recipients, seen_telegram_ids)
+    return recipients
+
+
 def get_subscribers(event_type: str, context: dict | None = None) -> list[dict]:
     events = pulse_client.get_records("Notification_Events")
     users = pulse_client.get_records("Users")
@@ -175,5 +202,13 @@ def get_subscribers(event_type: str, context: dict | None = None) -> list[dict]:
                 continue
             recipients.append(user)
             seen_telegram_ids.add(telegram_id)
+
+    context_role_recipients = _get_context_role_recipients(context, users)
+    for user in context_role_recipients:
+        telegram_id = _to_str(user.get("telegram_id"))
+        if not telegram_id or telegram_id in seen_telegram_ids:
+            continue
+        recipients.append(user)
+        seen_telegram_ids.add(telegram_id)
 
     return recipients

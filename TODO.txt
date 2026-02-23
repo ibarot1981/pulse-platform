@@ -22,3 +22,10 @@ Manage Production -> Manage Batch   -> New Batch
                                     -> Update Batch status
                                         -> Update By Batch 
                                         -> Update By 
+
+
+When to update usage playbook registry (do this in every relevant PR):
+- [ ] If any Permission_ID was added/removed/repurposed -> update docs/usage_playbook.md "Permission IDs In Use".
+- [ ] If any Event_ID was added/removed/repurposed -> update docs/usage_playbook.md "Event IDs In Use".
+- [ ] If MS/CNC routing tables/fields changed -> update docs/usage_playbook.md routing notes.
+- [ ] If workflow behavior changed -> append/update scenario notes in docs/usage_playbook.md.

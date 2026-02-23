@@ -144,3 +144,82 @@ def write_table_pdf(
 
     story = [Paragraph(title, title_style), Spacer(1, 4), table]
     doc.build(story)
+
+
+def write_grouped_ms_cutlist_pdf(
+    sections: list[dict],
+    output_path: str,
+    title: str = "MS Cut List",
+) -> None:
+    doc = SimpleDocTemplate(
+        output_path,
+        pagesize=letter,
+        leftMargin=10 * mm,
+        rightMargin=10 * mm,
+        topMargin=10 * mm,
+        bottomMargin=10 * mm,
+        title=title,
+        author="Pulse",
+        subject="MS Cut List",
+    )
+    styles = getSampleStyleSheet()
+    title_style = styles["Heading4"]
+    title_style.spaceAfter = 6
+    body_style = styles["BodyText"]
+    body_style.fontName = "Helvetica"
+    body_style.fontSize = 8
+    body_style.leading = 10
+    header_style = styles["BodyText"]
+    header_style.fontName = "Helvetica-Bold"
+    header_style.fontSize = 8
+    header_style.leading = 10
+    section_style = styles["BodyText"]
+    section_style.fontName = "Helvetica-Bold"
+    section_style.fontSize = 9
+    section_style.leading = 11
+
+    story = [Paragraph(title, title_style), Spacer(1, 4)]
+    headers = ["Product Part", "Material to Cut", "Length (mm)", "Total Qty"]
+
+    for section in sections:
+        process_seq = str(section.get("process_seq") or "")
+        rows = section.get("rows", [])
+        if not rows:
+            continue
+
+        table_data: list[list[Paragraph]] = [
+            [Paragraph(process_seq, section_style), Paragraph("", section_style), Paragraph("", section_style), Paragraph("", section_style)],
+            [Paragraph(header, header_style) for header in headers],
+        ]
+
+        for row in rows:
+            table_data.append(
+                [
+                    Paragraph(str(row.get("product_part") or ""), body_style),
+                    Paragraph(str(row.get("material_to_cut") or ""), body_style),
+                    Paragraph(str(row.get("length_mm") or ""), body_style),
+                    Paragraph(str(row.get("total_qty") or ""), body_style),
+                ]
+            )
+
+        table = Table(table_data, colWidths=[65 * mm, 65 * mm, 25 * mm, 25 * mm])
+        table.setStyle(
+            TableStyle(
+                [
+                    ("SPAN", (0, 0), (-1, 0)),
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e6e6e6")),
+                    ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#f2f2f2")),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("ALIGN", (2, 2), (3, -1), "RIGHT"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                    ("TOPPADDING", (0, 0), (-1, -1), 3),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ]
+            )
+        )
+        story.append(table)
+        story.append(Spacer(1, 5))
+
+    doc.build(story)

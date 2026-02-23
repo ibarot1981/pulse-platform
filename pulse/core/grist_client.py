@@ -1,4 +1,5 @@
 import requests
+from pathlib import Path
 
 
 class GristClient:
@@ -53,3 +54,18 @@ class GristClient:
         r = requests.post(url, json=payload, headers=self._headers())
         r.raise_for_status()
         return r.json()
+
+    def upload_attachment(self, file_path):
+        path = Path(file_path)
+        url = f"{self.server}/api/docs/{self.doc_id}/attachments"
+        with path.open("rb") as file_handle:
+            response = requests.post(
+                url,
+                headers=self._headers(),
+                files={"upload": (path.name, file_handle)},
+            )
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload, list) and payload:
+            return int(payload[0])
+        raise ValueError("Attachment upload failed: unexpected response payload.")

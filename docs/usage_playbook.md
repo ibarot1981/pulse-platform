@@ -19,6 +19,7 @@ Update this file whenever a new scenario is implemented.
 - Notifications config: `Notification_Events`, `Notification_Subscriptions` (Pulse doc)
 - Reminders config: `Reminder_Rules` (Pulse doc)
 - Production data: `ProductBatchMaster`, `BatchStatusHistory`, child tables (Costing doc)
+- MS routing config: `ProcessStageMapping` (Costing doc)
 
 ## Prerequisites
 
@@ -173,6 +174,49 @@ Copy this section and fill it for every new use case.
 5. Reminder rule has clear threshold and frequency.
 6. Activity logs show successful sends for test case.
 7. This document updated with the new scenario section.
+
+## F) Permission IDs In Use (Code Reference)
+
+These are the permission IDs currently referenced directly by code.
+
+- `production_view`: legacy stub entry for viewing production jobs.
+- `production_complete`: legacy stub entry for marking jobs complete.
+- `sales_view`: legacy stub entry for viewing sales data.
+- `sales_update`: legacy stub entry for updating sales data.
+- `task_assign_main`: main menu action to open task assignment flow.
+- `task_assign_usercontext`: user-context action to assign task to selected user.
+- `task_close`: "My Tasks" action.
+- `user_manage`: opens Manage Users flow.
+- `reminder_manage`: opens Reminder Rules stub.
+
+Related action targets used by menu routing:
+
+- `FULL_PRODUCT_MS_LIST`: opens full product MS list PDF flow.
+- `NEW_PRODUCTION_BATCH`: opens new production batch flow.
+- `PRODUCTION_PENDING_APPROVALS`: opens production batch approval flow.
+- `MY_MS_JOBS`: opens stage-based MS job queue for current supervisor role.
+
+## G) Event IDs In Use (Code Reference)
+
+These are event IDs currently dispatched by application workflows/reminders.
+
+- `production_batch_created`: emitted when a new production batch is created.
+- `production_batch_approved`: emitted after manager/admin approves a batch.
+- `production_batch_rejected`: emitted after manager/admin rejects a batch.
+- `batch_status_changed`: emitted on child row status updates via generic updater.
+- `ms_stage_pending`: emitted when an MS item enters a pending stage; recipients resolved from `ProcessStageMapping`.
+- `ms_stage_completed`: emitted when a supervisor marks an MS stage as done.
+- `production_batch_not_scheduled_reminder`: reminder event from reminder engine for approved but unscheduled batches.
+
+## H) MS Process Routing Notes
+
+- Source route field: `ProductPartMSList.Process_Seq` (Choice).
+- Stage-to-role table: `ProcessStageMapping`.
+- Batch-level cut list attachment fields (master table):
+  - `ProductBatchMaster.ms_cutlist_pdf`
+  - `ProductBatchMaster.cnc_cutlist_pdf`
+- MS workflow tracking fields (child table): `process_seq`, `total_qty`, `current_stage_index`, `current_stage_name`, `current_status`, `created_at`, `updated_at`, `last_updated_by`.
+- MS tracking stops at first "In <final stage>" status (for current routes this is typically `In Production`).
 
 ## Suggestions
 

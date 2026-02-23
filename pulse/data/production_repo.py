@@ -26,19 +26,27 @@ class ProductionRepo:
         "overall_status": "Text",
         "selected_part_ids": "Text",
         "notification_users": "Text",
+        "ms_cutlist_pdf": "Attachments",
+        "cnc_cutlist_pdf": "Attachments",
     }
 
     PRODUCT_BATCH_MS_SCHEMA = {
         "batch_id": "Reference:ProductBatchMaster",
         "product_part": "Text",
-        "material_to_cut": "Text",
-        "post_process": "Text",
-        "required_qty": "Numeric",
-        "status": "Text",
-        "start_date": "DateTime",
-        "scheduled_date": "DateTime",
-        "expected_completion_date": "DateTime",
-        "remarks": "Text",
+        "process_seq": "Text",
+        "total_qty": "Numeric",
+        "current_stage_index": "Int",
+        "current_stage_name": "Text",
+        "current_status": "Text",
+        "created_at": "DateTime",
+        "updated_at": "DateTime",
+        "last_updated_by": "Ref:Users",
+    }
+
+    PROCESS_STAGE_MAPPING_SCHEMA = {
+        "stage_name": "Text",
+        "supervisor_role": "Text",
+        "stage_order_priority": "Int",
     }
 
     BATCH_STATUS_HISTORY_SCHEMA = {
@@ -134,6 +142,40 @@ class ProductionRepo:
             result.append(record)
         return result
 
+    def get_table_columns(self, table: str) -> set[str]:
+        columns = self.costing_client.get_columns(table)
+        column_ids = set()
+        for column in columns:
+            col_id = column.get("id")
+            if col_id:
+                column_ids.add(str(col_id))
+        return column_ids
+
+    def filter_table_fields(self, table: str, fields: dict) -> dict:
+        columns = self.get_table_columns(table)
+        return {key: value for key, value in fields.items() if key in columns}
+
+    def get_ms_table_column_ids(self) -> set[str]:
+        return self.get_table_columns("ProductBatchMS")
+
+    def get_process_stage_mapping(self) -> dict[str, dict]:
+        try:
+            records = self.costing_client.get_records("ProcessStageMapping")
+        except Exception:
+            return {}
+        mapping = {}
+        for record in records:
+            fields = record.get("fields", {})
+            stage_name = str(fields.get("stage_name") or "").strip()
+            supervisor_role = str(fields.get("supervisor_role") or "").strip()
+            if not stage_name or not supervisor_role:
+                continue
+            mapping[stage_name] = {
+                "supervisor_role": supervisor_role,
+                "stage_order_priority": fields.get("stage_order_priority"),
+            }
+        return mapping
+
     def get_cnc_rows(self, part_ids: list[int]) -> list[dict]:
         records = self.costing_client.get_records("ProductPartCNCList")
         result = []
@@ -183,9 +225,11 @@ class ProductionRepo:
         records = response.get("records", [])
         return records[0]["id"]
 
-    def create_ms_rows(self, rows: list[dict]) -> None:
-        if rows:
-            self.costing_client.add_records("ProductBatchMS", rows)
+    def create_ms_rows(self, rows: list[dict]) -> list[int]:
+        if not rows:
+            return []
+        response = self.costing_client.add_records("ProductBatchMS", rows)
+        return [record.get("id") for record in response.get("records", []) if isinstance(record.get("id"), int)]
 
     def create_cnc_rows(self, rows: list[dict]) -> None:
         if rows:
@@ -258,6 +302,27 @@ class ProductionRepo:
     def update_ms(self, row_id: int, fields: dict) -> None:
         self.costing_client.patch_record("ProductBatchMS", row_id, fields)
 
+    def list_ms_rows_for_batch(self, batch_id: int) -> list[dict]:
+        records = self.costing_client.get_records("ProductBatchMS")
+        result = []
+        for record in records:
+            fields = record.get("fields", {})
+            row_batch = self._normalize_ref(fields.get("batch_id"))
+            if row_batch == batch_id:
+                result.append(record)
+        return result
+
+    def get_ms_row_by_id(self, row_id: int) -> dict | None:
+        records = self.costing_client.get_records("ProductBatchMS")
+        for record in records:
+            if record.get("id") == row_id:
+                return record
+        return None
+
+    def attach_pdf_to_master(self, batch_id: int, file_path: str, field_name: str = "ms_cutlist_pdf") -> None:
+        attachment_id = self.costing_client.upload_attachment(file_path)
+        self.update_master(batch_id, {field_name: ["L", attachment_id]})
+
     def update_ms_for_batch(self, batch_id: int, fields: dict) -> None:
         records = self.costing_client.get_records("ProductBatchMS")
         for record in records:
@@ -280,7 +345,7 @@ class ProductionRepo:
                 fields = record.get("fields", {})
                 if self._normalize_ref(fields.get("batch_id")) != batch_id:
                     continue
-                status = fields.get("status")
+                status = fields.get("status") or fields.get("current_status")
                 if status:
                     all_statuses.append(str(status))
         return all_statuses
@@ -313,6 +378,23 @@ class ProductionRepo:
             if role_ref in role_ids and fields.get("Telegram_ID"):
                 telegram_ids.append(str(fields.get("Telegram_ID")))
         return telegram_ids
+
+    def get_active_users_by_role_names(self, role_names: list[str]) -> list[dict]:
+        if not role_names:
+            return []
+        roles = self.get_roles()
+        role_ids = {r.get("id") for r in roles if r.get("fields", {}).get("Role_Name") in role_names}
+        users = self.get_users()
+        result = []
+        for user in users:
+            fields = user.get("fields", {})
+            if not fields.get("Active"):
+                continue
+            role_ref = self._normalize_ref(fields.get("Role"))
+            if role_ref not in role_ids:
+                continue
+            result.append(user)
+        return result
 
     def get_role_name_by_user_id(self, user_id: str) -> str:
         users = self.get_users()
