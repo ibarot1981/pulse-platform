@@ -19,7 +19,7 @@ Update this file whenever a new scenario is implemented.
 - Notifications config: `Notification_Events`, `Notification_Subscriptions` (Pulse doc)
 - Reminders config: `Reminder_Rules` (Pulse doc)
 - Production data: `ProductBatchMaster`, `BatchStatusHistory`, child tables (Costing doc)
-- MS routing config: `ProcessStageMapping` (Costing doc)
+- MS routing config (phase 1): `ProcessMaster`, `ProcessStage`, `StageMaster`, `RoleMaster_Mirror`, `UserRoleAssignment_Mirror` (Costing doc)
 
 ## Prerequisites
 
@@ -204,19 +204,112 @@ These are event IDs currently dispatched by application workflows/reminders.
 - `production_batch_approved`: emitted after manager/admin approves a batch.
 - `production_batch_rejected`: emitted after manager/admin rejects a batch.
 - `batch_status_changed`: emitted on child row status updates via generic updater.
-- `ms_stage_pending`: emitted when an MS item enters a pending stage; recipients resolved from `ProcessStageMapping`.
+- `ms_stage_pending`: emitted when an MS item enters a pending stage; recipients resolved from `ProcessStage.resolved_role_name` for the row's `process_seq` and stage.
 - `ms_stage_completed`: emitted when a supervisor marks an MS stage as done.
 - `production_batch_not_scheduled_reminder`: reminder event from reminder engine for approved but unscheduled batches.
 
 ## H) MS Process Routing Notes
 
-- Source route field: `ProductPartMSList.Process_Seq` (Choice).
-- Stage-to-role table: `ProcessStageMapping`.
+- Source route field: `ProductPartMSList.Process_Seq` (`Ref:ProcessMaster`).
+- Source route remarks field: `ProductPartMSList.Process_Seq_Remarks` (`Ref:ProcessMaster`, formula `$Process_Seq`).
+- Process definition tables:
+  - `ProcessMaster` (header, display label/summary, version/status)
+  - `ProcessStage` (ordered stage rows, resolved role per stage)
+  - `StageMaster` (default role per stage name)
+- Role/user mirror tables (synced from Pulse):
+  - `RoleMaster_Mirror`
+  - `UserMaster_Mirror`
+  - `UserRoleAssignment_Mirror`
 - Batch-level cut list attachment fields (master table):
   - `ProductBatchMaster.ms_cutlist_pdf`
   - `ProductBatchMaster.cnc_cutlist_pdf`
-- MS workflow tracking fields (child table): `process_seq`, `total_qty`, `current_stage_index`, `current_stage_name`, `current_status`, `created_at`, `updated_at`, `last_updated_by`.
-- MS tracking stops at first "In <final stage>" status (for current routes this is typically `In Production`).
+- MS workflow tracking fields (child table): `process_seq` (`Ref:ProcessMaster`), `total_qty`, `current_stage_index`, `current_stage_name`, `current_status`, `created_at`, `updated_at`, `last_updated_by`.
+- MS progression behavior:
+  - Intermediate stage transitions set status to `<Next Stage> Pending`.
+  - Transition into final stage sets status to `In <Final Stage>`.
+  - Completing final stage sets status to `Cutting Completed`.
+- Legacy compatibility: if no stage rows are found for a process ref, code falls back to parsing legacy text sequence.
+
+## I) Phase 1 Migration Registry
+
+- Date: 2026-02-24
+- Scope: Process sequence routing migrated from text/choice to master-reference model.
+- Schema migration script: `scripts/grist/apply_process_seq_phase1.py`
+- Bot files updated:
+  - `pulse/data/production_repo.py`
+  - `pulse/integrations/production.py`
+- Constraints applied:
+  - No new columns added to `ProductPartMSList`.
+  - Only `ProductPartMSList.Process_Seq` and `ProductPartMSList.Process_Seq_Remarks` types changed to references.
+
+## J) Phase 1 Table Registry + Data Entry
+
+Tables created in Costing for this requirement:
+
+1. `ProcessMaster`
+- Purpose: Process sequence header/version.
+- Enter manually:
+  - `process_code` (immutable key)
+  - `process_name`
+  - `version`
+  - `status` (`Active`/`Retired`)
+  - `legacy_process_seq_text` (for migration traceability)
+- Formula/auto:
+  - `active`, `stage_count`, `display_label`, `display_summary`
+
+2. `ProcessStage`
+- Purpose: Ordered stages for each process and resolved stage role.
+- Enter manually:
+  - `process_seq_id` (ref to `ProcessMaster`)
+  - `seq_no` (10,20,30...)
+  - `stage_id` (ref to `StageMaster`)
+  - `stage_level` (use `1` for current phase)
+  - `parent_stage_id` (optional, keep blank in phase 1)
+  - `role_override_id` (optional, only if stage role differs from default)
+- Formula/auto:
+  - `stage_name`, `resolved_role_id`, `resolved_role_name`, `suggested_supervisors`, `stage_label`
+
+3. `StageMaster`
+- Purpose: Canonical stage list + default role mapping.
+- Enter manually:
+  - `stage_code` (immutable key)
+  - `stage_name` (canonical text used across processes)
+  - `default_role_id` (ref to `RoleMaster_Mirror`)
+  - `active`
+- Formula/auto:
+  - `default_role_name`
+
+4. `RoleMaster_Mirror`
+- Purpose: Mirror of Pulse `Roles`.
+- Data source: sync script (`scripts/grist/apply_process_seq_phase1.py`).
+- Do not maintain manually except emergency correction.
+
+5. `UserMaster_Mirror`
+- Purpose: Mirror of Pulse `Users`.
+- Data source: sync script (`scripts/grist/apply_process_seq_phase1.py`).
+- Do not maintain manually except emergency correction.
+
+6. `UserRoleAssignment_Mirror`
+- Purpose: User-role mapping used for supervisor suggestions.
+- Data source in phase 1: derived from Pulse `Users.Role` (single role per user).
+- Enter manually only if temporary override is needed before Pulse-side update.
+
+7. `ProcessMaster.process_remarks` (column)
+- Purpose: Remarks shown in `ProductPartMSList.Process_Seq_Remarks`.
+- Enter manually in `ProcessMaster`:
+  - `process_remarks`
+- Behavior:
+  - `ProductPartMSList.Process_Seq_Remarks` auto-follows `Process_Seq`.
+  - UI displays `ProcessMaster.process_remarks` for that selected process.
+
+Existing tables changed for this requirement:
+
+1. `ProductPartMSList`
+- `Process_Seq` -> `Ref:ProcessMaster` (manual selection by user)
+- `Process_Seq_Remarks` -> `Ref:ProcessMaster` (formula-managed, auto-follows `Process_Seq`)
+
+2. `ProductBatchMS`
+- `process_seq` -> `Ref:ProcessMaster` (auto-filled by workflow from selected process)
 
 ## Suggestions
 

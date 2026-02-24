@@ -6,7 +6,6 @@ import tempfile
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 
 from pulse.data.production_repo import ProductionRepo
-from pulse.integrations.workflow_routing import next_stage_from_index, parse_process_seq
 from pulse.menu.submenu import BACK_LABEL, MAIN_MENU_LABEL, MAIN_STATE, set_main_menu_state
 from pulse.notifications.dispatcher import dispatch_event
 from pulse.settings import settings
@@ -247,11 +246,11 @@ def _from_int_list_csv(value: str) -> list[int]:
     return result
 
 
-def _normalize_process_seq(fields: dict) -> str:
+def _normalize_process_seq(fields: dict):
     value = fields.get("process_seq")
-    if not value:
+    if value in (None, "", 0):
         value = fields.get("Process_Seq")
-    return str(value or "").strip()
+    return _normalize_ref(value)
 
 
 def _format_qty(value: float) -> str:
@@ -261,13 +260,13 @@ def _format_qty(value: float) -> str:
 
 
 def _build_ms_rows(repo: ProductionRepo, batch_id: int, part_ids: list[int], batch_qty: int, timestamp_iso: str, updated_by) -> list[dict]:
-    grouped: dict[tuple[str, str], float] = {}
+    grouped: dict[tuple[str, object], float] = {}
     ms_columns = repo.get_ms_table_column_ids()
 
     for record in repo.get_ms_rows(part_ids):
         fields = record.get("fields", {})
         process_seq = _normalize_process_seq(fields)
-        if not process_seq:
+        if process_seq in (None, "", 0):
             continue
         part_name = str(fields.get("ProductPartName_ProductPartName") or "")
         total_qty = float(fields.get("QtyNos") or 0) * batch_qty
@@ -278,7 +277,7 @@ def _build_ms_rows(repo: ProductionRepo, batch_id: int, part_ids: list[int], bat
 
     rows = []
     for (part_name, process_seq), total_qty in grouped.items():
-        stages = parse_process_seq(process_seq)
+        stages = repo.get_process_stage_names(process_seq)
         if not stages:
             continue
         first_stage = stages[0]
@@ -309,7 +308,7 @@ def _build_ms_cutlist_sections(repo: ProductionRepo, part_ids: list[int], batch_
     for record in repo.get_ms_rows(part_ids):
         fields = record.get("fields", {})
         process_seq = _normalize_process_seq(fields)
-        if not process_seq:
+        if process_seq in (None, "", 0):
             continue
         part_name = str(fields.get("ProductPartName_ProductPartName") or "")
         material_ref = _normalize_ref(fields.get("MaterialToCut"))
@@ -318,12 +317,13 @@ def _build_ms_cutlist_sections(repo: ProductionRepo, part_ids: list[int], batch_
         total_qty = float(fields.get("QtyNos") or 0) * batch_qty
         if total_qty <= 0:
             continue
-        key = (process_seq, part_name, material_name, length_mm)
+        process_seq_label = repo.get_process_display_label(process_seq)
+        key = (process_seq_label, part_name, material_name, length_mm)
         grouped[key] = grouped.get(key, 0.0) + total_qty
 
     sections: dict[str, list[dict]] = {}
-    for (process_seq, part_name, material_name, length_mm), total_qty in grouped.items():
-        sections.setdefault(process_seq, []).append(
+    for (process_seq_label, part_name, material_name, length_mm), total_qty in grouped.items():
+        sections.setdefault(process_seq_label, []).append(
             {
                 "product_part": part_name,
                 "material_to_cut": material_name,
@@ -339,10 +339,8 @@ def _build_ms_cutlist_sections(repo: ProductionRepo, part_ids: list[int], batch_
     return ordered_sections
 
 
-def _resolve_supervisor_role_for_stage(repo: ProductionRepo, stage_name: str) -> str:
-    mapping = repo.get_process_stage_mapping()
-    details = mapping.get(stage_name, {})
-    return str(details.get("supervisor_role") or "").strip()
+def _resolve_supervisor_role_for_stage(repo: ProductionRepo, process_seq, stage_name: str) -> str:
+    return repo.get_stage_role_for_process_stage(process_seq, stage_name)
 
 
 async def _notify_stage_event(
@@ -627,7 +625,7 @@ async def _notify_ms_first_stage(repo: ProductionRepo, context, batch_id: int, m
         stage_name = str(row.get("current_stage_name") or "").strip()
         if not stage_name:
             continue
-        supervisor_role = _resolve_supervisor_role_for_stage(repo, stage_name)
+        supervisor_role = _resolve_supervisor_role_for_stage(repo, row.get("process_seq"), stage_name)
         if not supervisor_role:
             continue
         notify_key = (stage_name, supervisor_role)
@@ -668,18 +666,16 @@ def _get_batch_no_map(repo: ProductionRepo, batch_ids: set[int]) -> dict[int, st
 def _list_ms_jobs_for_user_role(repo: ProductionRepo, role_name: str) -> list[dict]:
     if not role_name:
         return []
-    stage_mapping = repo.get_process_stage_mapping()
-    stage_names = {stage for stage, details in stage_mapping.items() if details.get("supervisor_role") == role_name}
-    if not stage_names:
-        return []
 
     rows = []
     batch_ids = set()
     for record in repo.costing_client.get_records("ProductBatchMS"):
         fields = record.get("fields", {})
+        process_seq = _normalize_process_seq(fields)
         stage_name = str(fields.get("current_stage_name") or "").strip()
         current_status = str(fields.get("current_status") or fields.get("status") or "").strip()
-        if stage_name not in stage_names:
+        supervisor_role = _resolve_supervisor_role_for_stage(repo, process_seq, stage_name)
+        if supervisor_role != role_name:
             continue
         if current_status.startswith("In ") or current_status == "Cutting Completed":
             continue
@@ -781,18 +777,19 @@ async def advance_ms_stage(repo: ProductionRepo, context, row_id: int, updated_b
     batch_id = _normalize_ref(fields.get("batch_id"))
     if not isinstance(batch_id, int):
         raise ValueError("Invalid batch reference in MS row.")
-    process_seq = str(fields.get("process_seq") or "").strip()
-    stages = parse_process_seq(process_seq)
+    process_seq = _normalize_process_seq(fields)
+    stages = repo.get_process_stage_names(process_seq)
     if not stages:
         raise ValueError("Missing process sequence on MS row.")
 
     current_stage_index = int(fields.get("current_stage_index") or 0)
     current_stage_name = str(fields.get("current_stage_name") or stages[min(current_stage_index, len(stages) - 1)])
     old_status = str(fields.get("current_status") or fields.get("status") or "")
-    next_index, next_stage = next_stage_from_index(stages, current_stage_index)
+    next_index = current_stage_index + 1
+    next_stage = stages[next_index] if 0 <= next_index < len(stages) else None
     now_iso = _now_iso()
 
-    current_stage_role = _resolve_supervisor_role_for_stage(repo, current_stage_name)
+    current_stage_role = _resolve_supervisor_role_for_stage(repo, process_seq, current_stage_name)
     if next_stage is None:
         new_status = "Cutting Completed"
         history_remarks = "MS workflow completed without further stages."
@@ -842,7 +839,7 @@ async def advance_ms_stage(repo: ProductionRepo, context, row_id: int, updated_b
     )
 
     if next_stage:
-        next_stage_role = _resolve_supervisor_role_for_stage(repo, next_stage)
+        next_stage_role = _resolve_supervisor_role_for_stage(repo, process_seq, next_stage)
         await _notify_stage_event(
             context,
             "ms_stage_pending",

@@ -33,7 +33,7 @@ class ProductionRepo:
     PRODUCT_BATCH_MS_SCHEMA = {
         "batch_id": "Reference:ProductBatchMaster",
         "product_part": "Text",
-        "process_seq": "Text",
+        "process_seq": "Ref:ProcessMaster",
         "total_qty": "Numeric",
         "current_stage_index": "Int",
         "current_stage_name": "Text",
@@ -76,6 +76,13 @@ class ProductionRepo:
             return float(value)
         except (TypeError, ValueError):
             return 0.0
+
+    @staticmethod
+    def _safe_int(value):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     def get_production_config(self) -> dict:
         records = self.costing_client.get_records("ProductionConfig")
@@ -159,22 +166,123 @@ class ProductionRepo:
         return self.get_table_columns("ProductBatchMS")
 
     def get_process_stage_mapping(self) -> dict[str, dict]:
+        # Phase-1 source: ProcessStage + ProcessMaster definitions.
         try:
-            records = self.costing_client.get_records("ProcessStageMapping")
+            stage_rows = self.costing_client.get_records("ProcessStage")
         except Exception:
-            return {}
+            stage_rows = []
         mapping = {}
-        for record in records:
+        for record in stage_rows:
             fields = record.get("fields", {})
             stage_name = str(fields.get("stage_name") or "").strip()
-            supervisor_role = str(fields.get("supervisor_role") or "").strip()
+            supervisor_role = str(fields.get("resolved_role_name") or fields.get("supervisor_role") or "").strip()
             if not stage_name or not supervisor_role:
+                continue
+            if stage_name in mapping:
                 continue
             mapping[stage_name] = {
                 "supervisor_role": supervisor_role,
-                "stage_order_priority": fields.get("stage_order_priority"),
+                "stage_order_priority": fields.get("seq_no") or fields.get("stage_order_priority"),
             }
         return mapping
+
+    def _process_master_indexes(self) -> tuple[dict[int, dict], dict[str, int]]:
+        by_id: dict[int, dict] = {}
+        by_legacy_text: dict[str, int] = {}
+        try:
+            records = self.costing_client.get_records("ProcessMaster")
+        except Exception:
+            return by_id, by_legacy_text
+
+        for record in records:
+            rec_id = record.get("id")
+            if not isinstance(rec_id, int):
+                continue
+            fields = record.get("fields", {})
+            by_id[rec_id] = fields
+            legacy_text = str(fields.get("legacy_process_seq_text") or "").strip()
+            if legacy_text and legacy_text not in by_legacy_text:
+                by_legacy_text[legacy_text] = rec_id
+        return by_id, by_legacy_text
+
+    def get_process_seq_ref_id(self, process_seq_value) -> int | None:
+        normalized = self._normalize_ref(process_seq_value)
+        seq_id = self._safe_int(normalized)
+        if seq_id is not None:
+            return seq_id
+
+        legacy_text = str(normalized or "").strip()
+        if not legacy_text:
+            return None
+        _, by_legacy_text = self._process_master_indexes()
+        return by_legacy_text.get(legacy_text)
+
+    def get_process_display_label(self, process_seq_value) -> str:
+        seq_id = self.get_process_seq_ref_id(process_seq_value)
+        if seq_id is not None:
+            by_id, _ = self._process_master_indexes()
+            fields = by_id.get(seq_id, {})
+            label = str(fields.get("display_label") or "").strip()
+            if label:
+                return label
+            name = str(fields.get("process_name") or "").strip()
+            if name:
+                return name
+        return str(process_seq_value or "").strip()
+
+    def get_process_stage_names(self, process_seq_value) -> list[str]:
+        seq_id = self.get_process_seq_ref_id(process_seq_value)
+        if seq_id is not None:
+            try:
+                records = self.costing_client.get_records("ProcessStage")
+            except Exception:
+                records = []
+            rows: list[tuple[int, int, str]] = []
+            for record in records:
+                fields = record.get("fields", {})
+                row_seq = self._safe_int(self._normalize_ref(fields.get("process_seq_id")))
+                if row_seq != seq_id:
+                    continue
+                stage_name = str(fields.get("stage_name") or "").strip()
+                if not stage_name:
+                    continue
+                seq_no = self._safe_int(fields.get("seq_no")) or 0
+                rows.append((seq_no, int(record.get("id") or 0), stage_name))
+            if rows:
+                rows.sort(key=lambda item: (item[0], item[1]))
+                return [row[2] for row in rows]
+
+        legacy = str(process_seq_value or "").strip()
+        if not legacy:
+            return []
+        return [token.strip() for token in legacy.split(" - ") if token.strip()]
+
+    def get_stage_role_for_process_stage(self, process_seq_value, stage_name: str) -> str:
+        stage_name_clean = str(stage_name or "").strip()
+        if not stage_name_clean:
+            return ""
+
+        seq_id = self.get_process_seq_ref_id(process_seq_value)
+        if seq_id is not None:
+            try:
+                records = self.costing_client.get_records("ProcessStage")
+            except Exception:
+                records = []
+            for record in records:
+                fields = record.get("fields", {})
+                row_seq = self._safe_int(self._normalize_ref(fields.get("process_seq_id")))
+                if row_seq != seq_id:
+                    continue
+                row_stage = str(fields.get("stage_name") or "").strip()
+                if row_stage != stage_name_clean:
+                    continue
+                role = str(fields.get("resolved_role_name") or fields.get("supervisor_role") or "").strip()
+                if role:
+                    return role
+
+        mapping = self.get_process_stage_mapping()
+        details = mapping.get(stage_name_clean, {})
+        return str(details.get("supervisor_role") or "").strip()
 
     def get_cnc_rows(self, part_ids: list[int]) -> list[dict]:
         records = self.costing_client.get_records("ProductPartCNCList")
