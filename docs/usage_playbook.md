@@ -188,6 +188,8 @@ These are the permission IDs currently referenced directly by code.
 - `task_close`: "My Tasks" action.
 - `user_manage`: opens Manage Users flow.
 - `reminder_manage`: opens Reminder Rules stub.
+- `production_my_ms_jobs`: opens supervisor MS stage queue.
+- `production_my_ms_schedule`: opens supervisor batch scheduling queue.
 
 Related action targets used by menu routing:
 
@@ -195,6 +197,7 @@ Related action targets used by menu routing:
 - `NEW_PRODUCTION_BATCH`: opens new production batch flow.
 - `PRODUCTION_PENDING_APPROVALS`: opens production batch approval flow.
 - `MY_MS_JOBS`: opens stage-based MS job queue for current supervisor role.
+- `MY_MS_SCHEDULE`: opens supervisor schedule queue and propagates schedule date to all MS rows in selected batch.
 
 ## G) Event IDs In Use (Code Reference)
 
@@ -207,6 +210,9 @@ These are event IDs currently dispatched by application workflows/reminders.
 - `ms_stage_pending`: emitted when an MS item enters a pending stage; recipients resolved from `ProcessStage.resolved_role_name` for the row's `process_seq` and stage.
 - `ms_stage_completed`: emitted when a supervisor marks an MS stage as done.
 - `production_batch_not_scheduled_reminder`: reminder event from reminder engine for approved but unscheduled batches.
+- `production_batch_scheduled`: emitted when a batch is scheduled from supervisor quick action/menu flow.
+- `supervisor_batch_schedule_reminder`: reminder for supervisors to schedule batches pending in their stage queue.
+- `ms_stage_pending_reminder`: reminder for supervisors to update pending stage actions.
 
 ## H) MS Process Routing Notes
 

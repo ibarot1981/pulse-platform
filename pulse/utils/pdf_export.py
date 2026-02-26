@@ -8,6 +8,25 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from reportlab.pdfgen import canvas
 
+
+def _stable_process_color(process_key: str) -> colors.Color:
+    palette = [
+        "#e8f1ff",
+        "#eaf9ef",
+        "#fff5e8",
+        "#f2edff",
+        "#eaf7f7",
+        "#fff0f0",
+        "#f6f4ea",
+        "#edf5ff",
+    ]
+    value = str(process_key or "").strip()
+    if not value:
+        return colors.HexColor("#f2f2f2")
+    checksum = sum(ord(ch) for ch in value)
+    return colors.HexColor(palette[checksum % len(palette)])
+
+
 def write_text_pdf(lines: list[str], output_path: str, title: str = "Document") -> None:
     page_width, page_height = letter
     margin_left = 36
@@ -179,7 +198,7 @@ def write_grouped_ms_cutlist_pdf(
     section_style.leading = 11
 
     story = [Paragraph(title, title_style), Spacer(1, 4)]
-    headers = ["Product Part", "Material to Cut", "Length (mm)", "Total Qty"]
+    headers = ["Product Part", "Material to Cut", "Length (mm)", "Total Qty", "Next Stage"]
 
     for section in sections:
         process_seq = str(section.get("process_seq") or "")
@@ -188,7 +207,13 @@ def write_grouped_ms_cutlist_pdf(
             continue
 
         table_data: list[list[Paragraph]] = [
-            [Paragraph(process_seq, section_style), Paragraph("", section_style), Paragraph("", section_style), Paragraph("", section_style)],
+            [
+                Paragraph(process_seq, section_style),
+                Paragraph("", section_style),
+                Paragraph("", section_style),
+                Paragraph("", section_style),
+                Paragraph("", section_style),
+            ],
             [Paragraph(header, header_style) for header in headers],
         ]
 
@@ -199,15 +224,17 @@ def write_grouped_ms_cutlist_pdf(
                     Paragraph(str(row.get("material_to_cut") or ""), body_style),
                     Paragraph(str(row.get("length_mm") or ""), body_style),
                     Paragraph(str(row.get("total_qty") or ""), body_style),
+                    Paragraph(str(row.get("next_stage") or ""), body_style),
                 ]
             )
 
-        table = Table(table_data, colWidths=[65 * mm, 65 * mm, 25 * mm, 25 * mm])
+        shade = _stable_process_color(process_seq)
+        table = Table(table_data, colWidths=[52 * mm, 52 * mm, 20 * mm, 20 * mm, 36 * mm])
         table.setStyle(
             TableStyle(
                 [
                     ("SPAN", (0, 0), (-1, 0)),
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e6e6e6")),
+                    ("BACKGROUND", (0, 0), (-1, 0), shade),
                     ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#f2f2f2")),
                     ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
                     ("VALIGN", (0, 0), (-1, -1), "TOP"),
