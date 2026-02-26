@@ -1,10 +1,15 @@
 import json
 import os
 import tempfile
+import sys
 from datetime import datetime
 
 from telegram import ReplyKeyboardRemove, Update
 from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
+
+# Allow running as a script: `python pulse/main.py`
+if __package__ in (None, ""):
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pulse.config import BOT_TOKEN
 from pulse.core.permissions import get_permissions_for_role
@@ -12,11 +17,14 @@ from pulse.core.users import get_user_by_telegram
 from pulse.data.costing_repo import CostingRepo
 from pulse.integrations.production import (
     ACTION_MY_MS_JOBS,
+    ACTION_MY_MS_SCHEDULE,
     ACTION_NEW_PRODUCTION_BATCH,
     ACTION_PENDING_APPROVALS,
     AWAITING_APPROVAL_STATE,
     CONFIRMING_BATCH_STATE,
     ENTERING_BATCH_QTY_STATE,
+    MY_MS_SCHEDULE_CONFIRM_STATE,
+    MY_MS_SCHEDULE_SELECTION_STATE,
     MY_MS_JOBS_CONFIRM_STATE,
     MY_MS_JOBS_SELECTION_STATE,
     PENDING_APPROVALS_CONFIRM_STATE,
@@ -28,6 +36,7 @@ from pulse.integrations.production import (
     handle_production_state_text,
     handle_production_callback,
     start_my_ms_jobs,
+    start_my_ms_schedule,
     start_new_production_batch,
     start_pending_approvals,
 )
@@ -296,6 +305,10 @@ async def _execute_menu_action(
         await start_my_ms_jobs(update, context)
         return True
 
+    if action_type == ACTION_RUN_STUB and action_target == ACTION_MY_MS_SCHEDULE:
+        await start_my_ms_schedule(update, context)
+        return True
+
     await _handle_stub_action(update, context, permission_key)
     return True
 
@@ -410,6 +423,8 @@ async def fallback_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         AWAITING_APPROVAL_STATE,
         PENDING_APPROVALS_SELECTION_STATE,
         PENDING_APPROVALS_CONFIRM_STATE,
+        MY_MS_SCHEDULE_SELECTION_STATE,
+        MY_MS_SCHEDULE_CONFIRM_STATE,
         MY_MS_JOBS_SELECTION_STATE,
         MY_MS_JOBS_CONFIRM_STATE,
     }

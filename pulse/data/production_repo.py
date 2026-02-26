@@ -32,12 +32,19 @@ class ProductionRepo:
 
     PRODUCT_BATCH_MS_SCHEMA = {
         "batch_id": "Reference:ProductBatchMaster",
-        "product_part": "Text",
+        "product_part": "RefList:ProductPartMSList",
         "process_seq": "Ref:ProcessMaster",
         "total_qty": "Numeric",
         "current_stage_index": "Int",
         "current_stage_name": "Text",
+        "next_stage_name": "Text",
+        "current_stage_role_name": "Text",
+        "current_stage_supervisors": "Text",
         "current_status": "Text",
+        "supervisor_remarks": "Text",
+        "scheduled_date": "DateTime",
+        "stage_due_date": "DateTime",
+        "row_cutlist_pdf": "Attachments",
         "created_at": "DateTime",
         "updated_at": "DateTime",
         "last_updated_by": "Ref:Users",
@@ -63,12 +70,50 @@ class ProductionRepo:
     def __init__(self):
         self.costing_client = GristClient(PULSE_GRIST_SERVER, COSTING_DOC_ID, COSTING_API_KEY)
         self.pulse_client = GristClient(PULSE_GRIST_SERVER, PULSE_DOC_ID, PULSE_API_KEY)
+        self._product_partms_index_cache: dict[int, dict] | None = None
+
+    def ensure_ms_workflow_columns(self) -> None:
+        required_columns = {
+            "next_stage_name": "Text",
+            "current_stage_role_name": "Text",
+            "row_cutlist_pdf": "Attachments",
+            "supervisor_remarks": "Text",
+        }
+        existing = self.get_table_columns("ProductBatchMS")
+        for column_id, column_type in required_columns.items():
+            if column_id in existing:
+                continue
+            try:
+                self.costing_client.add_column("ProductBatchMS", column_id, column_type)
+            except Exception:
+                continue
 
     @staticmethod
     def _normalize_ref(value):
         if isinstance(value, list):
             return value[0] if value else None
         return value
+
+    @staticmethod
+    def _normalize_reflist(value) -> list[int]:
+        if value is None:
+            return []
+        raw_items = value
+        if isinstance(value, list):
+            # Grist RefList values are encoded as ["L", id1, id2, ...].
+            if value and value[0] == "L":
+                raw_items = value[1:]
+        else:
+            raw_items = [value]
+
+        result: list[int] = []
+        for item in raw_items:
+            try:
+                item_id = int(item)
+            except (TypeError, ValueError):
+                continue
+            result.append(item_id)
+        return result
 
     @staticmethod
     def _to_number(value):
@@ -149,6 +194,41 @@ class ProductionRepo:
             result.append(record)
         return result
 
+    def _get_product_partms_index(self) -> dict[int, dict]:
+        if self._product_partms_index_cache is not None:
+            return self._product_partms_index_cache
+        index: dict[int, dict] = {}
+        for record in self.costing_client.get_records("ProductPartMSList"):
+            rec_id = record.get("id")
+            if not isinstance(rec_id, int):
+                continue
+            index[rec_id] = record.get("fields", {})
+        self._product_partms_index_cache = index
+        return index
+
+    def get_product_part_names_from_field(self, product_part_value) -> list[str]:
+        refs = self._normalize_reflist(product_part_value)
+        if refs:
+            names: list[str] = []
+            seen: set[str] = set()
+            ms_index = self._get_product_partms_index()
+            for ref_id in refs:
+                fields = ms_index.get(ref_id, {})
+                part_name = str(fields.get("ProductPartName_ProductPartName") or "").strip()
+                if not part_name or part_name in seen:
+                    continue
+                seen.add(part_name)
+                names.append(part_name)
+            if names:
+                return names
+
+        raw_text = str(product_part_value or "").strip()
+        return [raw_text] if raw_text else []
+
+    def format_product_parts(self, product_part_value) -> str:
+        names = self.get_product_part_names_from_field(product_part_value)
+        return ", ".join(names)
+
     def get_table_columns(self, table: str) -> set[str]:
         columns = self.costing_client.get_columns(table)
         column_ids = set()
@@ -158,8 +238,28 @@ class ProductionRepo:
                 column_ids.add(str(col_id))
         return column_ids
 
+    def get_column_type(self, table: str, column_id: str) -> str:
+        for column in self.costing_client.get_columns(table):
+            if str(column.get("id") or "") != str(column_id):
+                continue
+            return str(column.get("fields", {}).get("type") or "")
+        return ""
+
+    def get_writable_table_columns(self, table: str) -> set[str]:
+        columns = self.costing_client.get_columns(table)
+        writable_ids = set()
+        for column in columns:
+            col_id = column.get("id")
+            if not col_id:
+                continue
+            fields = column.get("fields", {})
+            if fields.get("isFormula"):
+                continue
+            writable_ids.add(str(col_id))
+        return writable_ids
+
     def filter_table_fields(self, table: str, fields: dict) -> dict:
-        columns = self.get_table_columns(table)
+        columns = self.get_writable_table_columns(table)
         return {key: value for key, value in fields.items() if key in columns}
 
     def get_ms_table_column_ids(self) -> set[str]:
@@ -431,6 +531,10 @@ class ProductionRepo:
         attachment_id = self.costing_client.upload_attachment(file_path)
         self.update_master(batch_id, {field_name: ["L", attachment_id]})
 
+    def attach_pdf_to_ms_row(self, row_id: int, file_path: str, field_name: str = "row_cutlist_pdf") -> None:
+        attachment_id = self.costing_client.upload_attachment(file_path)
+        self.update_ms(row_id, {field_name: ["L", attachment_id]})
+
     def update_ms_for_batch(self, batch_id: int, fields: dict) -> None:
         records = self.costing_client.get_records("ProductBatchMS")
         for record in records:
@@ -562,6 +666,107 @@ class ProductionRepo:
             if days_open >= threshold_days:
                 pending.append(record)
 
+        return pending
+
+    def list_supervisor_schedule_pending_batches(self, threshold_days: int = 0) -> list[dict]:
+        now = datetime.utcnow()
+        masters = self.get_all_master_batches()
+        ms_rows = self.costing_client.get_records("ProductBatchMS")
+
+        current_roles_by_batch: dict[int, set[str]] = {}
+        for row in ms_rows:
+            fields = row.get("fields", {})
+            batch_id = self._normalize_ref(fields.get("batch_id"))
+            if not isinstance(batch_id, int):
+                continue
+            status = str(fields.get("current_status") or fields.get("status") or "")
+            if status == "Cutting Completed":
+                continue
+            role = str(fields.get("current_stage_role_name") or "").strip()
+            if not role:
+                stage_name = str(fields.get("current_stage_name") or "").strip()
+                role = self.get_stage_role_for_process_stage(fields.get("process_seq"), stage_name)
+            if not role:
+                continue
+            current_roles_by_batch.setdefault(batch_id, set()).add(role)
+
+        pending = []
+        for record in masters:
+            batch_id = record.get("id")
+            if not isinstance(batch_id, int):
+                continue
+            fields = record.get("fields", {})
+            if fields.get("approval_status") != "Approved":
+                continue
+            if fields.get("scheduled_date"):
+                continue
+            roles = sorted(current_roles_by_batch.get(batch_id, set()))
+            if not roles:
+                continue
+            start_raw = fields.get("start_date")
+            days_open = 0
+            if start_raw:
+                try:
+                    start_dt = datetime.fromisoformat(str(start_raw).replace("Z", "+00:00"))
+                    if start_dt.tzinfo is not None:
+                        start_dt = start_dt.replace(tzinfo=None)
+                    days_open = (now - start_dt).days
+                except ValueError:
+                    days_open = 0
+            if days_open < threshold_days:
+                continue
+            pending.append(
+                {
+                    "batch_id": batch_id,
+                    "batch_no": str(fields.get("batch_no") or ""),
+                    "roles": roles,
+                    "days_open": days_open,
+                }
+            )
+        return pending
+
+    def list_stage_rows_pending_reminder(self, threshold_days: int) -> list[dict]:
+        now = datetime.utcnow()
+        rows = self.costing_client.get_records("ProductBatchMS")
+        pending: list[dict] = []
+        for record in rows:
+            fields = record.get("fields", {})
+            status = str(fields.get("current_status") or fields.get("status") or "").strip()
+            if not status or status == "Cutting Completed":
+                continue
+            role_name = str(fields.get("current_stage_role_name") or "").strip()
+            if not role_name:
+                stage_name = str(fields.get("current_stage_name") or "").strip()
+                role_name = self.get_stage_role_for_process_stage(fields.get("process_seq"), stage_name)
+            if not role_name:
+                continue
+            updated_raw = fields.get("updated_at") or fields.get("created_at")
+            if not updated_raw:
+                continue
+            try:
+                updated_dt = datetime.fromisoformat(str(updated_raw).replace("Z", "+00:00"))
+                if updated_dt.tzinfo is not None:
+                    updated_dt = updated_dt.replace(tzinfo=None)
+            except ValueError:
+                continue
+            days_waiting = (now - updated_dt).days
+            if days_waiting < threshold_days:
+                continue
+            batch_id = self._normalize_ref(fields.get("batch_id"))
+            if not isinstance(batch_id, int):
+                continue
+            pending.append(
+                {
+                    "row_id": record.get("id"),
+                    "batch_id": batch_id,
+                    "product_part": self.format_product_parts(fields.get("product_part")),
+                    "process_seq": self.get_process_display_label(fields.get("process_seq")),
+                    "current_stage_name": str(fields.get("current_stage_name") or ""),
+                    "current_status": status,
+                    "role_name": role_name,
+                    "days_waiting": days_waiting,
+                }
+            )
         return pending
 
     def get_reminder_rule(self, rule_event_id: str) -> dict:

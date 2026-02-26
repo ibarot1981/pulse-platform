@@ -55,6 +55,22 @@ class GristClient:
         r.raise_for_status()
         return r.json()
 
+    def add_column(self, table, column_id, col_type):
+        url = f"{self.server}/api/docs/{self.doc_id}/tables/{table}/columns"
+        payload = {
+            "columns": [
+                {
+                    "id": column_id,
+                    "fields": {
+                        "type": col_type,
+                    },
+                }
+            ]
+        }
+        r = requests.post(url, json=payload, headers=self._headers())
+        r.raise_for_status()
+        return r.json()
+
     def upload_attachment(self, file_path):
         path = Path(file_path)
         url = f"{self.server}/api/docs/{self.doc_id}/attachments"
