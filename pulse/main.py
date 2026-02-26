@@ -21,11 +21,17 @@ from pulse.integrations.production import (
     ACTION_NEW_PRODUCTION_BATCH,
     ACTION_PENDING_APPROVALS,
     AWAITING_APPROVAL_STATE,
+    AWAITING_SCHEDULE_DATE_STATE,
     CONFIRMING_BATCH_STATE,
     ENTERING_BATCH_QTY_STATE,
+    MY_MS_JOBS_ACTION_STATE,
+    MY_MS_JOBS_CREATED_BY_SELECTION_STATE,
     MY_MS_SCHEDULE_CONFIRM_STATE,
     MY_MS_SCHEDULE_SELECTION_STATE,
     MY_MS_JOBS_CONFIRM_STATE,
+    MY_MS_JOBS_FILTER_STATE,
+    MY_MS_JOBS_NEXT_STAGE_SELECTION_STATE,
+    MY_MS_JOBS_REMARKS_STATE,
     MY_MS_JOBS_SELECTION_STATE,
     PENDING_APPROVALS_CONFIRM_STATE,
     PENDING_APPROVALS_SELECTION_STATE,
@@ -413,6 +419,14 @@ async def fallback_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await _show_menu_for_state(update, context)
         return
 
+    # Main menu actions should stay accessible even if a user is in an in-progress flow.
+    # This prevents stale state from forcing users to /start.
+    main_actions = _menu_actions(context, MAIN_STATE)
+    global_main_action = main_actions.get(text)
+    if global_main_action:
+        await _execute_menu_action(update, context, global_main_action)
+        return
+
     production_states = {
         SELECTING_BATCH_MODE_STATE,
         SELECTING_PRODUCT_MODEL_STATE,
@@ -425,8 +439,14 @@ async def fallback_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         PENDING_APPROVALS_CONFIRM_STATE,
         MY_MS_SCHEDULE_SELECTION_STATE,
         MY_MS_SCHEDULE_CONFIRM_STATE,
+        MY_MS_JOBS_FILTER_STATE,
+        MY_MS_JOBS_NEXT_STAGE_SELECTION_STATE,
+        MY_MS_JOBS_CREATED_BY_SELECTION_STATE,
         MY_MS_JOBS_SELECTION_STATE,
+        MY_MS_JOBS_ACTION_STATE,
         MY_MS_JOBS_CONFIRM_STATE,
+        MY_MS_JOBS_REMARKS_STATE,
+        AWAITING_SCHEDULE_DATE_STATE,
     }
     if state in production_states:
         handled = await handle_production_state_text(update, context, text)
