@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from io import BytesIO
 import tempfile
+import re
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 import requests
@@ -26,8 +27,13 @@ MY_MS_JOBS_SELECTION_STATE = "my_ms_jobs_selection"
 MY_MS_JOBS_FILTER_STATE = "my_ms_jobs_filter"
 MY_MS_JOBS_NEXT_STAGE_SELECTION_STATE = "my_ms_jobs_next_stage_selection"
 MY_MS_JOBS_CREATED_BY_SELECTION_STATE = "my_ms_jobs_created_by_selection"
+MY_MS_JOBS_BATCH_SELECTION_STATE = "my_ms_jobs_batch_selection"
 MY_MS_JOBS_ACTION_STATE = "my_ms_jobs_action"
 MY_MS_JOBS_CONFIRM_STATE = "my_ms_jobs_confirm"
+MY_MS_JOBS_BULK_ACTION_STATE = "my_ms_jobs_bulk_action"
+MY_MS_JOBS_BULK_REMARKS_STATE = "my_ms_jobs_bulk_remarks"
+MY_MS_BATCH_ACTION_STATE = "my_ms_batch_action"
+MY_MS_BATCH_REMARKS_STATE = "my_ms_batch_remarks"
 MY_MS_SCHEDULE_SELECTION_STATE = "my_ms_schedule_selection"
 MY_MS_SCHEDULE_CONFIRM_STATE = "my_ms_schedule_confirm"
 AWAITING_SCHEDULE_DATE_STATE = "awaiting_schedule_date"
@@ -49,11 +55,20 @@ _TODAY = "Today"
 _TOMORROW = "Tomorrow"
 _MS_VIEW_ALL = "View All"
 _MS_VIEW_BY_NEXT_STAGE = "View By Next Stage"
-_MS_VIEW_BY_CREATED_BY = "Created By"
+_MS_VIEW_BY_CREATED_BY = "View Created By"
+_MS_VIEW_BY_BATCH_NO = "View By Batch No"
 _MS_ACTION_DONE = "Mark as Done"
 _MS_ACTION_REMARKS = "Add Remarks"
 _MS_ACTION_VIEW_LIST = "View MS List"
 _MS_ACTION_HOLD = "Mark as Hold"
+_MS_BULK_ACTION_DONE = "Mark Selected Done"
+_MS_BULK_ACTION_HOLD = "Mark Selected Hold"
+_MS_BULK_ACTION_REMARKS = "Add Selected Remarks"
+_MS_BATCH_ACTION_DONE = "Done Current Stage (Batch)"
+_MS_BATCH_ACTION_HOLD = "Hold Batch Rows"
+_MS_BATCH_ACTION_REMARKS = "Add Batch Remarks"
+_MS_BATCH_ACTION_VIEW = "View This Batch"
+_MS_BATCH_ACTION_SCHEDULE = "Schedule Batch"
 
 _TYPE_COMPLETE = "New Complete Batch (M-C-S)"
 _TYPE_MS = "MS Only"
@@ -98,6 +113,10 @@ def _clear_flow(context):
     context.user_data.pop("pending_approvals_confirm", None)
     context.user_data.pop("my_ms_jobs_selection", None)
     context.user_data.pop("my_ms_jobs_confirm", None)
+    context.user_data.pop("my_ms_jobs_bulk_action", None)
+    context.user_data.pop("my_ms_jobs_bulk_remarks", None)
+    context.user_data.pop("my_ms_batch_action", None)
+    context.user_data.pop("my_ms_batch_remarks", None)
     context.user_data.pop("my_ms_jobs_action", None)
     context.user_data.pop("my_ms_schedule_selection", None)
     context.user_data.pop("my_ms_schedule_confirm", None)
@@ -105,13 +124,74 @@ def _clear_flow(context):
     context.user_data.pop("my_ms_jobs_filter", None)
     context.user_data.pop("my_ms_jobs_filter_value", None)
     context.user_data.pop("my_ms_jobs_creator_by_batch", None)
+    context.user_data.pop("my_ms_jobs_batch_no_by_id", None)
     context.user_data.pop("my_ms_jobs_remarks", None)
     context.user_data.pop("my_ms_jobs_next_stage_selection", None)
     context.user_data.pop("my_ms_jobs_created_by_selection", None)
+    context.user_data.pop("my_ms_jobs_batch_selection", None)
 
 
 def _build_keyboard(rows: list[list[str]]):
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+
+def _format_menu_text(text: str) -> str:
+    raw_lines = str(text or "").splitlines()
+    expanded_lines: list[str] = []
+    for raw in raw_lines:
+        if "|" in raw:
+            parts = [part.strip() for part in raw.split("|")]
+            expanded_lines.extend([part for part in parts if part])
+        else:
+            expanded_lines.append(raw.rstrip())
+
+    emoji_prefixes = [
+        ("My MS Jobs", "\U0001F535 My MS Jobs"),
+        ("View:", "\u26AA View:"),
+        ("Choose entries using:", "\u26AA Choose entries using:"),
+        ("Quick actions:", "\U0001F7E0 Quick actions:"),
+        ("Optional:", "\u26AA Optional:"),
+        ("Batch No:", "\U0001F535 Batch No:"),
+        ("Current Stage:", "\U0001F7E0 Current Stage:"),
+        ("Next Stage:", "\U0001F7E2 Next Stage:"),
+        ("Created By:", "\u26AA Created By:"),
+        ("Qty:", "\u26AA Qty:"),
+        ("Status:", "\U0001F7E2 Status:"),
+        ("Remarks:", "\u26AA Remarks:"),
+        ("Batch Summary", "\U0001F535 Batch Summary"),
+        ("Batch Actions", "\U0001F7E0 Batch Actions"),
+        ("Choose one action:", "\u26AA Choose one action:"),
+        ("Select ", "\u26AA Select "),
+        ("Schedule ", "\U0001F7E0 Schedule "),
+        ("No ", "\U0001F534 No "),
+    ]
+
+    styled_lines: list[str] = []
+    for line in expanded_lines:
+        stripped = line.strip()
+        if not stripped:
+            styled_lines.append("")
+            continue
+        updated = stripped
+        for prefix, replacement in emoji_prefixes:
+            if updated.startswith(prefix):
+                updated = replacement + updated[len(prefix):]
+                break
+        styled_lines.append(updated)
+
+    final_lines: list[str] = []
+    seen_entry = False
+    for line in styled_lines:
+        is_entry = bool(re.match(r"^\d+\.\s", line))
+        if is_entry:
+            if seen_entry and final_lines and final_lines[-1] != "":
+                final_lines.append("")
+            seen_entry = True
+        final_lines.append(line)
+
+    while final_lines and not final_lines[-1]:
+        final_lines.pop()
+    return "\n".join(final_lines)
 
 
 async def _reply(update, text: str, rows: list[list[str]] | None = None):
@@ -120,7 +200,7 @@ async def _reply(update, text: str, rows: list[list[str]] | None = None):
         if not has_main_menu:
             rows = rows + [[MAIN_MENU_LABEL]]
     markup = _build_keyboard(rows) if rows else None
-    await update.effective_message.reply_text(text, reply_markup=markup)
+    await update.effective_message.reply_text(_format_menu_text(text), reply_markup=markup)
 
 
 def _paginate(records: list, page: int, page_size: int):
@@ -331,28 +411,110 @@ def _build_ms_stage_pending_message(
 
 def _build_ms_job_entry_text(
     index: int,
-    batch_no: str,
-    batch_by: str,
     part_name: str,
-    stage_name: str,
     next_stage: str,
     qty: str,
     status: str,
     remarks: str,
+    mode: str,
 ) -> str:
-    status_icon = "\U0001F534" if "hold" in str(status or "").lower() else "\U0001F7E2"
+    status_text = status or "-"
+    row = f"{index}. {part_name or '-'} | Qty: {qty} | Status: {status_text}"
+    if mode == _MS_VIEW_ALL:
+        row += f" | Next: {next_stage or '-'}"
+    if remarks:
+        row += f" | Remarks: {remarks}"
+    return row
+
+
+def _build_ms_jobs_group_header(
+    mode: str,
+    batch_no: str,
+    current_stage: str,
+    next_stage: str,
+    created_by: str,
+) -> list[str]:
     lines = [
-        f"{index}. \U0001F4E6 Batch: {batch_no}",
-        f"   \U0001F464 Batch By: {batch_by or '-'}",
-        f"   \U0001F9E9 Part: {part_name}",
-        f"   \U0001F504 Current: {stage_name or '-'}",
-        f"   \u23ED\uFE0F Next: {next_stage or '-'}",
-        f"   \U0001F4CF Qty: {qty}",
-        f"   {status_icon} Status: {status or '-'}",
-        f"   \U0001F4DD Remarks: {remarks or '-'}",
-        "",
+        f"Batch No: {batch_no or '-'}",
+        f"Current Stage: {current_stage or '-'}",
+    ]
+    if mode == _MS_VIEW_BY_NEXT_STAGE:
+        lines.append(f"Next Stage: {next_stage or '-'}")
+    if mode == _MS_VIEW_BY_CREATED_BY:
+        lines.append(f"Created By: {created_by or '-'}")
+    return lines
+
+
+def _build_ms_batch_summary_text(repo: ProductionRepo, batch_id: int, batch_no: str) -> str:
+    rows = repo.list_ms_rows_for_batch(batch_id)
+    if not rows:
+        return f"Batch Summary\nBatch No: {batch_no or '-'}\nNo MS rows found for this batch."
+
+    total = len(rows)
+    pending = 0
+    pending_confirm = 0
+    hold = 0
+    completed = 0
+    stage_counts: dict[str, int] = {}
+    next_stage_counts: dict[str, int] = {}
+    for row in rows:
+        fields = row.get("fields", {})
+        status = str(fields.get("current_status") or fields.get("status") or "").strip()
+        if status == _MS_PENDING_CONFIRMATION:
+            pending_confirm += 1
+        elif "hold" in status.lower():
+            hold += 1
+        elif status in ("Cutting Completed", "Done", "Completed"):
+            completed += 1
+        elif _is_pending_ms_status(status):
+            pending += 1
+        stage_name = str(fields.get("current_stage_name") or "").strip()
+        if stage_name:
+            stage_counts[stage_name] = stage_counts.get(stage_name, 0) + 1
+        next_stage = str(fields.get("next_stage_name") or "").strip()
+        if next_stage:
+            next_stage_counts[next_stage] = next_stage_counts.get(next_stage, 0) + 1
+
+    stage_summary = ", ".join(
+        f"{name}({count})" for name, count in sorted(stage_counts.items(), key=lambda item: (-item[1], item[0]))[:5]
+    ) or "-"
+    next_summary = ", ".join(
+        f"{name}({count})" for name, count in sorted(next_stage_counts.items(), key=lambda item: (-item[1], item[0]))[:5]
+    ) or "-"
+
+    lines = [
+        "Batch Summary",
+        f"Batch No: {batch_no or '-'}",
+        f"Total Rows: {total}",
+        f"Pending: {pending} | Pending Confirm: {pending_confirm} | On Hold: {hold} | Completed: {completed}",
+        f"Current Stages: {stage_summary}",
+        f"Next Stages: {next_summary}",
     ]
     return "\n".join(lines)
+
+
+async def _show_my_ms_jobs_bulk_action_menu(update, context, selected_rows: list[dict]) -> None:
+    count = len(selected_rows)
+    lines = [
+        f"Bulk action for {count} selected row(s).",
+        "Choose one action:",
+    ]
+    context.user_data["menu_state"] = MY_MS_JOBS_BULK_ACTION_STATE
+    await _reply(
+        update,
+        "\n".join(lines),
+        [[_MS_BULK_ACTION_DONE], [_MS_BULK_ACTION_HOLD], [_MS_BULK_ACTION_REMARKS], [BACK_LABEL]],
+    )
+
+
+async def _show_my_ms_batch_action_menu(update, context, batch_id: int, batch_no: str) -> None:
+    context.user_data["my_ms_batch_action"] = {"batch_id": batch_id, "batch_no": batch_no}
+    context.user_data["menu_state"] = MY_MS_BATCH_ACTION_STATE
+    await _reply(
+        update,
+        f"Batch Actions\nBatch No: {batch_no or '-'}\nChoose one action:",
+        [[_MS_BATCH_ACTION_DONE], [_MS_BATCH_ACTION_HOLD], [_MS_BATCH_ACTION_REMARKS], [_MS_BATCH_ACTION_VIEW], [_MS_BATCH_ACTION_SCHEDULE], [BACK_LABEL]],
+    )
 
 def _extract_first_attachment_ref(attachments_value) -> tuple[int | None, str]:
     if attachments_value is None:
@@ -758,12 +920,25 @@ def _parse_prefixed_selection(text: str) -> tuple[str, int] | None:
     if len(value) < 2:
         return None
     action = value[0].upper()
-    if action not in {"D", "S", "P", "V", "R", "H"}:
+    if action not in {"D", "S", "P", "V", "R", "H", "B"}:
         return None
     token = value[1:].strip()
     if not token.isdigit():
         return None
     return action, int(token)
+
+
+def _parse_bulk_prefixed_selection(text: str) -> list[int] | None:
+    value = str(text or "").strip()
+    if len(value) < 2:
+        return None
+    action = value[0].upper()
+    if action != "X":
+        return None
+    tokens = _parse_number_tokens(value[1:].strip())
+    if not tokens:
+        return []
+    return tokens
 
 
 def _parse_schedule_date_text(text: str) -> str | None:
@@ -1220,7 +1395,7 @@ async def _show_my_ms_jobs_filter_menu(update, context) -> None:
     await _reply(
         update,
         "My MS Jobs\nChoose list view:",
-        [[_MS_VIEW_ALL], [_MS_VIEW_BY_NEXT_STAGE], [_MS_VIEW_BY_CREATED_BY], [BACK_LABEL]],
+        [[_MS_VIEW_ALL], [_MS_VIEW_BY_NEXT_STAGE], [_MS_VIEW_BY_CREATED_BY], [_MS_VIEW_BY_BATCH_NO], [BACK_LABEL]],
     )
 
 
@@ -1242,6 +1417,18 @@ def _get_my_ms_jobs_creator_options(records: list[dict], creator_by_batch: dict[
         creator_name = str(creator_by_batch.get(batch_id) or "").strip()
         if creator_name:
             options.add(creator_name)
+    return sorted(options)
+
+
+def _get_my_ms_jobs_batch_options(records: list[dict], batch_no_by_id: dict[int, str]) -> list[str]:
+    options: set[str] = set()
+    for row in records:
+        batch_id = _normalize_ref(row.get("fields", {}).get("batch_id"))
+        if not isinstance(batch_id, int):
+            continue
+        batch_no = str(batch_no_by_id.get(batch_id) or "").strip()
+        if batch_no:
+            options.add(batch_no)
     return sorted(options)
 
 
@@ -1308,32 +1495,59 @@ async def _show_my_ms_jobs_page(update, context) -> None:
         creator_by_batch = _get_batch_creator_name_map(repo, normalized_batch_ids)
         context.user_data["my_ms_jobs_creator_by_batch"] = creator_by_batch
 
+    mode = context.user_data.get("my_ms_jobs_filter", _MS_VIEW_ALL)
     lines = [
-        "🧰 My MS Jobs",
+        "My MS Jobs",
         f"View: {selection.get('view_mode', _MS_VIEW_ALL)}",
         "Choose entries using: `1` or `1,3`",
-        "Quick actions: `D1` Mark Done | `R1` Add Remarks | `V1` View MS List | `H1` Mark Hold",
+        "Quick actions: `D1` Done | `R1` Remarks | `V1` View List | `H1` Hold | `B1/X1` Batch Summary | `X1,3` Bulk Mode",
         "Optional: `S1` Schedule Batch",
         "",
     ]
+
+    last_group_key = None
     for idx, row in enumerate(page_records, start=1):
         fields = row.get("fields", {})
         batch_id = _normalize_ref(fields.get("batch_id"))
         batch_no = batch_no_map.get(batch_id, str(batch_id or ""))
+        batch_by = str(creator_by_batch.get(batch_id) or "")
+        stage_name = str(fields.get("current_stage_name") or "")
+        next_stage = str(fields.get("next_stage_name") or "")
         qty = fields.get("total_qty") if fields.get("total_qty") is not None else fields.get("required_qty")
         qty_text = _format_qty(float(qty or 0))
         part_label = _resolve_ms_row_part_text(repo, fields)
+
+        if mode == _MS_VIEW_BY_NEXT_STAGE:
+            group_key = (batch_no, stage_name, next_stage)
+        elif mode == _MS_VIEW_BY_CREATED_BY:
+            group_key = (batch_no, stage_name, batch_by)
+        else:
+            group_key = (batch_no, stage_name)
+
+        if group_key != last_group_key:
+            if last_group_key is not None:
+                lines.append("")
+            lines.extend(
+                _build_ms_jobs_group_header(
+                    mode=mode,
+                    batch_no=batch_no,
+                    current_stage=stage_name,
+                    next_stage=next_stage,
+                    created_by=batch_by,
+                )
+            )
+            lines.append("")
+            last_group_key = group_key
+
         lines.append(
             _build_ms_job_entry_text(
                 index=idx,
-                batch_no=batch_no,
-                batch_by=str(creator_by_batch.get(batch_id) or ""),
                 part_name=part_label,
-                stage_name=str(fields.get("current_stage_name") or ""),
-                next_stage=str(fields.get("next_stage_name") or ""),
+                next_stage=next_stage,
                 qty=qty_text,
                 status=str(fields.get("current_status") or fields.get("status") or ""),
                 remarks=str(fields.get("supervisor_remarks") or ""),
+                mode=mode,
             )
         )
 
@@ -1341,6 +1555,25 @@ async def _show_my_ms_jobs_page(update, context) -> None:
     if page > 0:
         rows.append([_PAGE_PREV])
     if end < len(records):
+        rows.append([_PAGE_NEXT])
+    rows.append([BACK_LABEL])
+    await _reply(update, "\n".join(lines), rows)
+
+
+async def _show_my_ms_jobs_batch_filter_page(update, context) -> None:
+    selection = context.user_data.get("my_ms_jobs_batch_selection", {})
+    options = selection.get("options", [])
+    page = selection.get("page", 0)
+    page_size = selection.get("page_size", settings.MSCUTLIST_PAGE_SIZE)
+    page_options, _, end = _paginate(options, page, page_size)
+
+    lines = ["Select Batch No:", "Enter one number like 1", ""]
+    for idx, batch_no in enumerate(page_options, start=1):
+        lines.append(f"{idx}. {batch_no}")
+    rows = []
+    if page > 0:
+        rows.append([_PAGE_PREV])
+    if end < len(options):
         rows.append([_PAGE_NEXT])
     rows.append([BACK_LABEL])
     await _reply(update, "\n".join(lines), rows)
@@ -1366,6 +1599,7 @@ async def start_my_ms_jobs(update, context) -> None:
         if isinstance(_normalize_ref(row.get("fields", {}).get("batch_id")), int)
     }
     context.user_data["my_ms_jobs_creator_by_batch"] = _get_batch_creator_name_map(repo, batch_ids)
+    context.user_data["my_ms_jobs_batch_no_by_id"] = _get_batch_no_map(repo, batch_ids)
     context.user_data["my_ms_jobs_selection"] = {
         "records": records,
         "page": 0,
@@ -1423,7 +1657,13 @@ async def start_my_ms_schedule(update, context) -> None:
     await _show_my_ms_schedule_page(update, context)
 
 
-def _apply_my_ms_jobs_filter(records: list[dict], mode: str, mode_value: str, creator_by_batch: dict[int, str]) -> tuple[list[dict], str]:
+def _apply_my_ms_jobs_filter(
+    records: list[dict],
+    mode: str,
+    mode_value: str,
+    creator_by_batch: dict[int, str],
+    batch_no_by_id: dict[int, str],
+) -> tuple[list[dict], str]:
     filtered = _filter_ms_jobs(records, mode)
     if mode == _MS_VIEW_BY_NEXT_STAGE and mode_value:
         filtered = [
@@ -1439,6 +1679,14 @@ def _apply_my_ms_jobs_filter(records: list[dict], mode: str, mode_value: str, cr
                 continue
             if str(creator_by_batch.get(batch_id) or "").strip() == mode_value:
                 filtered.append(row)
+    if mode == _MS_VIEW_BY_BATCH_NO and mode_value:
+        filtered = []
+        for row in records:
+            batch_id = _normalize_ref(row.get("fields", {}).get("batch_id"))
+            if not isinstance(batch_id, int):
+                continue
+            if str(batch_no_by_id.get(batch_id) or "").strip() == mode_value:
+                filtered.append(row)
     view_mode = f"{mode}: {mode_value}" if mode_value else mode
     return filtered, view_mode
 
@@ -1453,10 +1701,12 @@ def _refresh_my_ms_jobs_selection(context, repo: ProductionRepo, role_name: str)
         if isinstance(_normalize_ref(row.get("fields", {}).get("batch_id")), int)
     }
     creator_by_batch = _get_batch_creator_name_map(repo, batch_ids)
-    filtered_rows, view_mode = _apply_my_ms_jobs_filter(all_rows, mode, mode_value, creator_by_batch)
+    batch_no_by_id = _get_batch_no_map(repo, batch_ids)
+    filtered_rows, view_mode = _apply_my_ms_jobs_filter(all_rows, mode, mode_value, creator_by_batch, batch_no_by_id)
 
     context.user_data["my_ms_jobs_all_records"] = all_rows
     context.user_data["my_ms_jobs_creator_by_batch"] = creator_by_batch
+    context.user_data["my_ms_jobs_batch_no_by_id"] = batch_no_by_id
     context.user_data["my_ms_jobs_selection"] = {
         "records": filtered_rows,
         "page": 0,
@@ -1512,6 +1762,14 @@ async def _execute_ms_job_action(update, context, action_code: str, selected_rec
     updated_by = repo.get_costing_user_ref_by_user_id(user.get("user_id", ""))
     fields = selected_record.get("fields", {})
     batch_id = _normalize_ref(fields.get("batch_id"))
+
+    if action_code == "B":
+        if not isinstance(batch_id, int):
+            await _reply(update, "Batch not found for selected row.")
+            return True
+        batch_no = str((repo.get_master_by_id(batch_id) or {}).get("fields", {}).get("batch_no") or "")
+        await _reply(update, _build_ms_batch_summary_text(repo, batch_id, batch_no))
+        return True
 
     if action_code in ("P", "V"):
         try:
@@ -2550,18 +2808,34 @@ async def handle_production_state_text(update, context, text: str) -> bool:
             context.user_data.pop("my_ms_jobs_all_records", None)
             context.user_data.pop("my_ms_jobs_filter_value", None)
             context.user_data.pop("my_ms_jobs_creator_by_batch", None)
+            context.user_data.pop("my_ms_jobs_batch_no_by_id", None)
+            context.user_data.pop("my_ms_jobs_batch_selection", None)
+            context.user_data.pop("my_ms_jobs_bulk_action", None)
+            context.user_data.pop("my_ms_jobs_bulk_remarks", None)
+            context.user_data.pop("my_ms_batch_action", None)
+            context.user_data.pop("my_ms_batch_remarks", None)
             context.user_data["menu_state"] = _target_return_state(context)
             return True
         normalized_filter_map = {
             _normalize_menu_text(_MS_VIEW_ALL): _MS_VIEW_ALL,
             _normalize_menu_text(_MS_VIEW_BY_NEXT_STAGE): _MS_VIEW_BY_NEXT_STAGE,
             _normalize_menu_text(_MS_VIEW_BY_CREATED_BY): _MS_VIEW_BY_CREATED_BY,
+            _normalize_menu_text(_MS_VIEW_BY_BATCH_NO): _MS_VIEW_BY_BATCH_NO,
         }
         selected_filter = normalized_filter_map.get(_normalize_menu_text(text))
         if not selected_filter:
             await _reply(update, "Choose a valid MS jobs view.")
             return True
         all_records = context.user_data.get("my_ms_jobs_all_records", [])
+        batch_no_by_id = context.user_data.get("my_ms_jobs_batch_no_by_id")
+        if not isinstance(batch_no_by_id, dict):
+            batch_ids = {
+                _normalize_ref(row.get("fields", {}).get("batch_id"))
+                for row in all_records
+                if isinstance(_normalize_ref(row.get("fields", {}).get("batch_id")), int)
+            }
+            batch_no_by_id = _get_batch_no_map(ProductionRepo(), batch_ids)
+            context.user_data["my_ms_jobs_batch_no_by_id"] = batch_no_by_id
         if selected_filter == _MS_VIEW_BY_NEXT_STAGE:
             options = _get_my_ms_jobs_next_stage_options(all_records)
             if not options:
@@ -2596,6 +2870,19 @@ async def handle_production_state_text(update, context, text: str) -> bool:
             }
             context.user_data["menu_state"] = MY_MS_JOBS_CREATED_BY_SELECTION_STATE
             await _show_my_ms_jobs_created_by_filter_page(update, context)
+            return True
+        if selected_filter == _MS_VIEW_BY_BATCH_NO:
+            options = _get_my_ms_jobs_batch_options(all_records, batch_no_by_id)
+            if not options:
+                await _reply(update, "No batch entries available for your MS jobs.", [[BACK_LABEL]])
+                return True
+            context.user_data["my_ms_jobs_batch_selection"] = {
+                "options": options,
+                "page": 0,
+                "page_size": settings.MSCUTLIST_PAGE_SIZE,
+            }
+            context.user_data["menu_state"] = MY_MS_JOBS_BATCH_SELECTION_STATE
+            await _show_my_ms_jobs_batch_filter_page(update, context)
             return True
         filtered = _filter_ms_jobs(all_records, selected_filter)
         if not filtered:
@@ -2649,6 +2936,7 @@ async def handle_production_state_text(update, context, text: str) -> bool:
             _MS_VIEW_BY_NEXT_STAGE,
             selected_stage,
             context.user_data.get("my_ms_jobs_creator_by_batch", {}),
+            context.user_data.get("my_ms_jobs_batch_no_by_id", {}),
         )
         context.user_data.pop("my_ms_jobs_next_stage_selection", None)
         if not filtered:
@@ -2702,6 +2990,7 @@ async def handle_production_state_text(update, context, text: str) -> bool:
             _MS_VIEW_BY_CREATED_BY,
             selected_creator,
             context.user_data.get("my_ms_jobs_creator_by_batch", {}),
+            context.user_data.get("my_ms_jobs_batch_no_by_id", {}),
         )
         context.user_data.pop("my_ms_jobs_created_by_selection", None)
         if not filtered:
@@ -2709,6 +2998,69 @@ async def handle_production_state_text(update, context, text: str) -> bool:
             return True
         context.user_data["my_ms_jobs_filter"] = _MS_VIEW_BY_CREATED_BY
         context.user_data["my_ms_jobs_filter_value"] = selected_creator
+        context.user_data["my_ms_jobs_selection"] = {
+            "records": filtered,
+            "page": 0,
+            "page_size": settings.MSCUTLIST_PAGE_SIZE,
+            "view_mode": view_mode,
+        }
+        context.user_data["menu_state"] = MY_MS_JOBS_SELECTION_STATE
+        await _show_my_ms_jobs_page(update, context)
+        return True
+
+    if state == MY_MS_JOBS_BATCH_SELECTION_STATE:
+        selection = context.user_data.get("my_ms_jobs_batch_selection", {})
+        options = selection.get("options", [])
+        page = selection.get("page", 0)
+        page_size = selection.get("page_size", settings.MSCUTLIST_PAGE_SIZE)
+
+        if text == _PAGE_PREV:
+            selection["page"] = max(0, page - 1)
+            await _show_my_ms_jobs_batch_filter_page(update, context)
+            return True
+        if text == _PAGE_NEXT:
+            max_page = max((len(options) - 1) // page_size, 0)
+            selection["page"] = min(max_page, page + 1)
+            await _show_my_ms_jobs_batch_filter_page(update, context)
+            return True
+        if text == BACK_LABEL:
+            context.user_data.pop("my_ms_jobs_batch_selection", None)
+            await _show_my_ms_jobs_filter_menu(update, context)
+            return True
+
+        selected_numbers = _parse_number_tokens(text)
+        if len(selected_numbers) != 1:
+            await _reply(update, "Select one option number.")
+            return True
+        page_options, _, _ = _paginate(options, page, page_size)
+        option_index = selected_numbers[0] - 1
+        if option_index < 0 or option_index >= len(page_options):
+            await _reply(update, "No valid selection on this page.")
+            return True
+        selected_batch_no = page_options[option_index]
+        all_records = context.user_data.get("my_ms_jobs_all_records", [])
+        batch_no_by_id = context.user_data.get("my_ms_jobs_batch_no_by_id")
+        if not isinstance(batch_no_by_id, dict):
+            batch_ids = {
+                _normalize_ref(row.get("fields", {}).get("batch_id"))
+                for row in all_records
+                if isinstance(_normalize_ref(row.get("fields", {}).get("batch_id")), int)
+            }
+            batch_no_by_id = _get_batch_no_map(ProductionRepo(), batch_ids)
+            context.user_data["my_ms_jobs_batch_no_by_id"] = batch_no_by_id
+        filtered, view_mode = _apply_my_ms_jobs_filter(
+            all_records,
+            _MS_VIEW_BY_BATCH_NO,
+            selected_batch_no,
+            context.user_data.get("my_ms_jobs_creator_by_batch", {}),
+            batch_no_by_id,
+        )
+        context.user_data.pop("my_ms_jobs_batch_selection", None)
+        if not filtered:
+            await _reply(update, "No MS jobs found for selected batch.", [[BACK_LABEL]])
+            return True
+        context.user_data["my_ms_jobs_filter"] = _MS_VIEW_BY_BATCH_NO
+        context.user_data["my_ms_jobs_filter_value"] = selected_batch_no
         context.user_data["my_ms_jobs_selection"] = {
             "records": filtered,
             "page": 0,
@@ -2807,6 +3159,39 @@ async def handle_production_state_text(update, context, text: str) -> bool:
             await _show_my_ms_jobs_filter_menu(update, context)
             return True
 
+        bulk_prefixed = _parse_bulk_prefixed_selection(text)
+        if bulk_prefixed is not None:
+            if not bulk_prefixed:
+                await _reply(update, "Use X1 for summary or X1,3 for bulk mode.")
+                return True
+            page_records, _, _ = _paginate(records, page, page_size)
+            selected_records = []
+            for number in bulk_prefixed:
+                item_index = number - 1
+                if item_index < 0 or item_index >= len(page_records):
+                    continue
+                selected_records.append(page_records[item_index])
+            if not selected_records:
+                await _reply(update, "No valid selection on this page.")
+                return True
+            if len(selected_records) == 1:
+                row_fields = selected_records[0].get("fields", {})
+                batch_id = _normalize_ref(row_fields.get("batch_id"))
+                if not isinstance(batch_id, int):
+                    await _reply(update, "Batch not found for selected row.")
+                    return True
+                repo = ProductionRepo()
+                batch_no = str((repo.get_master_by_id(batch_id) or {}).get("fields", {}).get("batch_no") or "")
+                await _reply(update, _build_ms_batch_summary_text(repo, batch_id, batch_no))
+                await _show_my_ms_batch_action_menu(update, context, batch_id, batch_no)
+                return True
+            context.user_data["my_ms_jobs_bulk_action"] = {
+                "selected_ids": [record.get("id") for record in selected_records if isinstance(record.get("id"), int)],
+                "selected_rows": selected_records,
+            }
+            await _show_my_ms_jobs_bulk_action_menu(update, context, selected_records)
+            return True
+
         prefixed = _parse_prefixed_selection(text)
         if prefixed:
             action_code, number = prefixed
@@ -2832,7 +3217,7 @@ async def handle_production_state_text(update, context, text: str) -> bool:
 
         selected_numbers = _parse_number_tokens(text)
         if not selected_numbers:
-            await _reply(update, "Use 1/1,3 or quick actions D1/R1/V1/H1/S1.")
+            await _reply(update, "Use 1/1,3 or quick actions D1/R1/V1/H1/S1/B1/X1,3.")
             return True
 
         page_records, _, _ = _paginate(records, page, page_size)
@@ -2936,6 +3321,381 @@ async def handle_production_state_text(update, context, text: str) -> bool:
         context.user_data["menu_state"] = MY_MS_JOBS_SELECTION_STATE
         await _reply(update, f"Marked {done_count} job(s) done. Waiting for next-stage confirmations.")
         await _show_my_ms_jobs_page(update, context)
+        return True
+
+    if state == MY_MS_JOBS_BULK_ACTION_STATE:
+        if text == BACK_LABEL:
+            context.user_data.pop("my_ms_jobs_bulk_action", None)
+            context.user_data["menu_state"] = MY_MS_JOBS_SELECTION_STATE
+            await _show_my_ms_jobs_page(update, context)
+            return True
+        data = context.user_data.get("my_ms_jobs_bulk_action", {})
+        selected_ids = [row_id for row_id in data.get("selected_ids", []) if isinstance(row_id, int)]
+        selected_rows = data.get("selected_rows", [])
+        if not selected_ids:
+            context.user_data.pop("my_ms_jobs_bulk_action", None)
+            context.user_data["menu_state"] = MY_MS_JOBS_SELECTION_STATE
+            await _reply(update, "No selected rows for bulk action.")
+            await _show_my_ms_jobs_page(update, context)
+            return True
+
+        repo = ProductionRepo()
+        user = context.user_data.get("user", {})
+        updated_by = repo.get_costing_user_ref_by_user_id(user.get("user_id", ""))
+
+        if text == _MS_BULK_ACTION_REMARKS:
+            context.user_data["my_ms_jobs_bulk_remarks"] = {"selected_ids": selected_ids, "selected_rows": selected_rows}
+            context.user_data["menu_state"] = MY_MS_JOBS_BULK_REMARKS_STATE
+            await _reply(update, "Enter remarks text for selected rows:", [[BACK_LABEL]])
+            return True
+
+        if text == _MS_BULK_ACTION_DONE:
+            done_count = 0
+            for row_id in selected_ids:
+                try:
+                    await _mark_ms_stage_done_pending_confirmation(repo, context, row_id, updated_by)
+                    done_count += 1
+                except Exception:
+                    continue
+            context.user_data.pop("my_ms_jobs_bulk_action", None)
+            role_name = repo.get_role_name_by_user_id(user.get("user_id", ""))
+            refreshed = _refresh_my_ms_jobs_selection(context, repo, role_name)
+            if not refreshed:
+                context.user_data.pop("my_ms_jobs_selection", None)
+                set_main_menu_state(context)
+                await _reply(update, f"Marked {done_count}/{len(selected_ids)} selected row(s) done. No pending MS jobs in your queue.")
+                return True
+            context.user_data["menu_state"] = MY_MS_JOBS_SELECTION_STATE
+            await _reply(update, f"Marked {done_count}/{len(selected_ids)} selected row(s) done.")
+            await _show_my_ms_jobs_page(update, context)
+            return True
+
+        if text == _MS_BULK_ACTION_HOLD:
+            hold_count = 0
+            for selected in selected_rows:
+                row_id = selected.get("id")
+                if not isinstance(row_id, int):
+                    continue
+                row = repo.get_ms_row_by_id(row_id)
+                if not row:
+                    continue
+                row_fields = row.get("fields", {})
+                batch_id = _normalize_ref(row_fields.get("batch_id"))
+                old_status = str(row_fields.get("current_status") or row_fields.get("status") or "")
+                hold_status = "On Hold"
+                try:
+                    repo.update_ms(
+                        row_id,
+                        repo.filter_table_fields(
+                            "ProductBatchMS",
+                            {
+                                "current_status": hold_status,
+                                "status": hold_status,
+                                "updated_at": _now_iso(),
+                                "last_updated_by": updated_by,
+                            },
+                        ),
+                    )
+                    hold_count += 1
+                except Exception:
+                    continue
+                if isinstance(batch_id, int):
+                    repo.add_status_history(
+                        batch_id,
+                        "MS",
+                        row_id,
+                        old_status,
+                        hold_status,
+                        updated_by,
+                        "Marked as hold by supervisor (bulk action).",
+                    )
+                    part_name = _resolve_ms_row_part_text(repo, row_fields)
+                    batch_no = str((repo.get_master_by_id(batch_id) or {}).get("fields", {}).get("batch_no") or "")
+                    await _notify_roles(
+                        context,
+                        batch_id,
+                        f"MS row put on hold (bulk).\nBatch: {batch_no}\nPart: {part_name}\nStatus: {hold_status}",
+                        ["Production_Supervisor", "Production Supervisor", "System_Admin"],
+                    )
+            context.user_data.pop("my_ms_jobs_bulk_action", None)
+            role_name = repo.get_role_name_by_user_id(user.get("user_id", ""))
+            _refresh_my_ms_jobs_selection(context, repo, role_name)
+            context.user_data["menu_state"] = MY_MS_JOBS_SELECTION_STATE
+            await _reply(update, f"Marked {hold_count}/{len(selected_ids)} selected row(s) hold.")
+            await _show_my_ms_jobs_page(update, context)
+            return True
+
+        await _reply(
+            update,
+            "Choose one bulk action from menu.",
+            [[_MS_BULK_ACTION_DONE], [_MS_BULK_ACTION_HOLD], [_MS_BULK_ACTION_REMARKS], [BACK_LABEL]],
+        )
+        return True
+
+    if state == MY_MS_JOBS_BULK_REMARKS_STATE:
+        if text == BACK_LABEL:
+            context.user_data.pop("my_ms_jobs_bulk_remarks", None)
+            data = context.user_data.get("my_ms_jobs_bulk_action", {})
+            await _show_my_ms_jobs_bulk_action_menu(update, context, data.get("selected_rows", []))
+            return True
+        remarks_text = str(text or "").strip()
+        if not remarks_text:
+            await _reply(update, "Remarks cannot be empty. Enter remarks text:", [[BACK_LABEL]])
+            return True
+        data = context.user_data.get("my_ms_jobs_bulk_remarks", {})
+        selected_ids = [row_id for row_id in data.get("selected_ids", []) if isinstance(row_id, int)]
+        if not selected_ids:
+            context.user_data.pop("my_ms_jobs_bulk_remarks", None)
+            context.user_data.pop("my_ms_jobs_bulk_action", None)
+            context.user_data["menu_state"] = MY_MS_JOBS_SELECTION_STATE
+            await _reply(update, "No selected rows for bulk remarks.")
+            await _show_my_ms_jobs_page(update, context)
+            return True
+
+        repo = ProductionRepo()
+        user = context.user_data.get("user", {})
+        updated_by = repo.get_costing_user_ref_by_user_id(user.get("user_id", ""))
+        updated_count = 0
+        for row_id in selected_ids:
+            row = repo.get_ms_row_by_id(row_id)
+            if not row:
+                continue
+            row_fields = row.get("fields", {})
+            batch_id = _normalize_ref(row_fields.get("batch_id"))
+            old_remarks = str(row_fields.get("supervisor_remarks") or "")
+            try:
+                repo.update_ms(
+                    row_id,
+                    repo.filter_table_fields(
+                        "ProductBatchMS",
+                        {
+                            "supervisor_remarks": remarks_text,
+                            "updated_at": _now_iso(),
+                            "last_updated_by": updated_by,
+                        },
+                    ),
+                )
+                updated_count += 1
+            except Exception:
+                continue
+
+            if isinstance(batch_id, int):
+                repo.add_status_history(
+                    batch_id,
+                    "MS",
+                    row_id,
+                    old_remarks,
+                    remarks_text,
+                    updated_by,
+                    "Supervisor remarks updated (bulk action).",
+                )
+                part_name = _resolve_ms_row_part_text(repo, row_fields)
+                batch_no = str((repo.get_master_by_id(batch_id) or {}).get("fields", {}).get("batch_no") or "")
+                await _notify_roles(
+                    context,
+                    batch_id,
+                    f"Supervisor Remarks Added (bulk)\nBatch: {batch_no}\nPart: {part_name}\n{remarks_text}",
+                    ["Production_Supervisor", "Production Supervisor", "Production_Manager"],
+                )
+
+        context.user_data.pop("my_ms_jobs_bulk_remarks", None)
+        context.user_data.pop("my_ms_jobs_bulk_action", None)
+        role_name = repo.get_role_name_by_user_id(user.get("user_id", ""))
+        _refresh_my_ms_jobs_selection(context, repo, role_name)
+        context.user_data["menu_state"] = MY_MS_JOBS_SELECTION_STATE
+        await _reply(update, f"Remarks updated for {updated_count}/{len(selected_ids)} selected row(s).")
+        await _show_my_ms_jobs_page(update, context)
+        return True
+
+    if state == MY_MS_BATCH_ACTION_STATE:
+        if text == BACK_LABEL:
+            context.user_data.pop("my_ms_batch_action", None)
+            context.user_data["menu_state"] = MY_MS_JOBS_SELECTION_STATE
+            await _show_my_ms_jobs_page(update, context)
+            return True
+
+        data = context.user_data.get("my_ms_batch_action", {})
+        batch_id = data.get("batch_id")
+        batch_no = str(data.get("batch_no") or "")
+        if not isinstance(batch_id, int):
+            context.user_data.pop("my_ms_batch_action", None)
+            context.user_data["menu_state"] = MY_MS_JOBS_SELECTION_STATE
+            await _reply(update, "Batch context is missing.")
+            await _show_my_ms_jobs_page(update, context)
+            return True
+
+        repo = ProductionRepo()
+        user = context.user_data.get("user", {})
+        user_role_name = repo.get_role_name_by_user_id(user.get("user_id", ""))
+        updated_by = repo.get_costing_user_ref_by_user_id(user.get("user_id", ""))
+
+        if text == _MS_BATCH_ACTION_VIEW:
+            all_records = context.user_data.get("my_ms_jobs_all_records", [])
+            batch_no_by_id = context.user_data.get("my_ms_jobs_batch_no_by_id", {})
+            filtered, view_mode = _apply_my_ms_jobs_filter(
+                all_records,
+                _MS_VIEW_BY_BATCH_NO,
+                batch_no,
+                context.user_data.get("my_ms_jobs_creator_by_batch", {}),
+                batch_no_by_id if isinstance(batch_no_by_id, dict) else {},
+            )
+            context.user_data["my_ms_jobs_filter"] = _MS_VIEW_BY_BATCH_NO
+            context.user_data["my_ms_jobs_filter_value"] = batch_no
+            context.user_data["my_ms_jobs_selection"] = {
+                "records": filtered,
+                "page": 0,
+                "page_size": settings.MSCUTLIST_PAGE_SIZE,
+                "view_mode": view_mode,
+            }
+            context.user_data["menu_state"] = MY_MS_JOBS_SELECTION_STATE
+            await _show_my_ms_jobs_page(update, context)
+            return True
+
+        if text == _MS_BATCH_ACTION_SCHEDULE:
+            if not _is_batch_schedulable_for_role(repo, batch_id, user_role_name):
+                await _reply(update, "You are not authorized to schedule this batch or it is already scheduled.")
+                return True
+            await _prompt_schedule_date(
+                update,
+                context,
+                [batch_id],
+                return_state=MY_MS_BATCH_ACTION_STATE,
+                title=f"Schedule Batch {batch_no or ''}",
+            )
+            return True
+
+        if text == _MS_BATCH_ACTION_DONE:
+            done_count = 0
+            try:
+                done_count = await _mark_batch_stage_done(repo, context, batch_id, updated_by, user_role_name)
+            except Exception:
+                await _reply(update, "Could not complete batch stage action.")
+                return True
+            role_name = repo.get_role_name_by_user_id(user.get("user_id", ""))
+            _refresh_my_ms_jobs_selection(context, repo, role_name)
+            await _reply(update, f"Marked {done_count} row(s) done for batch {batch_no or '-'}")
+            await _show_my_ms_batch_action_menu(update, context, batch_id, batch_no)
+            return True
+
+        if text == _MS_BATCH_ACTION_HOLD:
+            hold_count = 0
+            for row in _rows_for_batch_and_role(repo, batch_id, user_role_name):
+                row_id = row.get("id")
+                if not isinstance(row_id, int):
+                    continue
+                row_fields = row.get("fields", {})
+                old_status = str(row_fields.get("current_status") or row_fields.get("status") or "")
+                hold_status = "On Hold"
+                try:
+                    repo.update_ms(
+                        row_id,
+                        repo.filter_table_fields(
+                            "ProductBatchMS",
+                            {
+                                "current_status": hold_status,
+                                "status": hold_status,
+                                "updated_at": _now_iso(),
+                                "last_updated_by": updated_by,
+                            },
+                        ),
+                    )
+                    hold_count += 1
+                except Exception:
+                    continue
+                repo.add_status_history(
+                    batch_id,
+                    "MS",
+                    row_id,
+                    old_status,
+                    hold_status,
+                    updated_by,
+                    "Marked as hold by supervisor (batch action).",
+                )
+            role_name = repo.get_role_name_by_user_id(user.get("user_id", ""))
+            _refresh_my_ms_jobs_selection(context, repo, role_name)
+            await _reply(update, f"Marked {hold_count} row(s) hold for batch {batch_no or '-'}")
+            await _show_my_ms_batch_action_menu(update, context, batch_id, batch_no)
+            return True
+
+        if text == _MS_BATCH_ACTION_REMARKS:
+            context.user_data["my_ms_batch_remarks"] = {"batch_id": batch_id, "batch_no": batch_no}
+            context.user_data["menu_state"] = MY_MS_BATCH_REMARKS_STATE
+            await _reply(update, f"Enter remarks text for batch {batch_no or '-'}:", [[BACK_LABEL]])
+            return True
+
+        await _reply(
+            update,
+            "Choose one batch action from menu.",
+            [[_MS_BATCH_ACTION_DONE], [_MS_BATCH_ACTION_HOLD], [_MS_BATCH_ACTION_REMARKS], [_MS_BATCH_ACTION_VIEW], [_MS_BATCH_ACTION_SCHEDULE], [BACK_LABEL]],
+        )
+        return True
+
+    if state == MY_MS_BATCH_REMARKS_STATE:
+        if text == BACK_LABEL:
+            remarks_ctx = context.user_data.get("my_ms_batch_remarks", {})
+            context.user_data.pop("my_ms_batch_remarks", None)
+            batch_id = remarks_ctx.get("batch_id")
+            batch_no = str(remarks_ctx.get("batch_no") or "")
+            if not isinstance(batch_id, int):
+                context.user_data["menu_state"] = MY_MS_JOBS_SELECTION_STATE
+                await _show_my_ms_jobs_page(update, context)
+                return True
+            await _show_my_ms_batch_action_menu(update, context, batch_id, batch_no)
+            return True
+        remarks_text = str(text or "").strip()
+        if not remarks_text:
+            await _reply(update, "Remarks cannot be empty. Enter remarks text:", [[BACK_LABEL]])
+            return True
+        remarks_ctx = context.user_data.get("my_ms_batch_remarks", {})
+        batch_id = remarks_ctx.get("batch_id")
+        batch_no = str(remarks_ctx.get("batch_no") or "")
+        if not isinstance(batch_id, int):
+            context.user_data.pop("my_ms_batch_remarks", None)
+            context.user_data["menu_state"] = MY_MS_JOBS_SELECTION_STATE
+            await _reply(update, "Invalid batch for remarks.")
+            await _show_my_ms_jobs_page(update, context)
+            return True
+
+        repo = ProductionRepo()
+        user = context.user_data.get("user", {})
+        user_role_name = repo.get_role_name_by_user_id(user.get("user_id", ""))
+        updated_by = repo.get_costing_user_ref_by_user_id(user.get("user_id", ""))
+        updated_count = 0
+        for row in _rows_for_batch_and_role(repo, batch_id, user_role_name):
+            row_id = row.get("id")
+            if not isinstance(row_id, int):
+                continue
+            row_fields = row.get("fields", {})
+            old_remarks = str(row_fields.get("supervisor_remarks") or "")
+            try:
+                repo.update_ms(
+                    row_id,
+                    repo.filter_table_fields(
+                        "ProductBatchMS",
+                        {
+                            "supervisor_remarks": remarks_text,
+                            "updated_at": _now_iso(),
+                            "last_updated_by": updated_by,
+                        },
+                    ),
+                )
+                updated_count += 1
+            except Exception:
+                continue
+            repo.add_status_history(
+                batch_id,
+                "MS",
+                row_id,
+                old_remarks,
+                remarks_text,
+                updated_by,
+                "Supervisor remarks updated (batch action).",
+            )
+        context.user_data.pop("my_ms_batch_remarks", None)
+        role_name = repo.get_role_name_by_user_id(user.get("user_id", ""))
+        _refresh_my_ms_jobs_selection(context, repo, role_name)
+        await _reply(update, f"Updated remarks for {updated_count} row(s) in batch {batch_no or '-'}")
+        await _show_my_ms_batch_action_menu(update, context, batch_id, batch_no)
         return True
 
     if state == MY_MS_JOBS_REMARKS_STATE:
@@ -3072,3 +3832,4 @@ async def handle_production_state_text(update, context, text: str) -> bool:
         return False
 
     return False
+
