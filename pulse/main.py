@@ -16,6 +16,7 @@ from pulse.core.permissions import get_permissions_for_role
 from pulse.core.users import get_user_by_telegram
 from pulse.data.costing_repo import CostingRepo
 from pulse.integrations.production import (
+    ACTION_VIEW_BATCH,
     ACTION_MY_MS_JOBS,
     ACTION_MY_MS_SCHEDULE,
     ACTION_NEW_PRODUCTION_BATCH,
@@ -30,6 +31,7 @@ from pulse.integrations.production import (
     MY_MS_JOBS_BULK_REMARKS_STATE,
     MY_MS_BATCH_ACTION_STATE,
     MY_MS_BATCH_REMARKS_STATE,
+    MY_MS_JOBS_HANDOFF_REJECT_REMARKS_STATE,
     MY_MS_JOBS_CREATED_BY_SELECTION_STATE,
     MY_MS_SCHEDULE_CONFIRM_STATE,
     MY_MS_SCHEDULE_SELECTION_STATE,
@@ -38,6 +40,7 @@ from pulse.integrations.production import (
     MY_MS_JOBS_NEXT_STAGE_SELECTION_STATE,
     MY_MS_JOBS_REMARKS_STATE,
     MY_MS_JOBS_SELECTION_STATE,
+    VIEW_BATCH_SELECTION_STATE,
     PENDING_APPROVALS_CONFIRM_STATE,
     PENDING_APPROVALS_SELECTION_STATE,
     SELECTING_BATCH_MODE_STATE,
@@ -48,6 +51,7 @@ from pulse.integrations.production import (
     handle_production_callback,
     start_my_ms_jobs,
     start_my_ms_schedule,
+    start_view_batch,
     start_new_production_batch,
     start_pending_approvals,
 )
@@ -320,6 +324,10 @@ async def _execute_menu_action(
         await start_my_ms_schedule(update, context)
         return True
 
+    if action_type == ACTION_RUN_STUB and action_target in (ACTION_VIEW_BATCH, "PRODUCTION_VIEW_BATCH"):
+        await start_view_batch(update, context)
+        return True
+
     await _handle_stub_action(update, context, permission_key)
     return True
 
@@ -453,9 +461,11 @@ async def fallback_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         MY_MS_JOBS_CONFIRM_STATE,
         MY_MS_JOBS_BULK_ACTION_STATE,
         MY_MS_JOBS_BULK_REMARKS_STATE,
+        MY_MS_JOBS_HANDOFF_REJECT_REMARKS_STATE,
         MY_MS_BATCH_ACTION_STATE,
         MY_MS_BATCH_REMARKS_STATE,
         MY_MS_JOBS_REMARKS_STATE,
+        VIEW_BATCH_SELECTION_STATE,
         AWAITING_SCHEDULE_DATE_STATE,
     }
     if state in production_states:

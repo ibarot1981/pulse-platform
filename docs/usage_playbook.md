@@ -165,6 +165,47 @@ Copy this section and fill it for every new use case.
 - Rollback plan:
 - Notes:
 
+### Scenario: Batch Overview + Drill-down Tracker (Telegram)
+
+- Date: 2026-02-28
+- Owner: Engineering
+- Business goal: Reduce overload in batch summary messages by showing compact flow snapshot with drill-down menus.
+- Tables touched:
+  - Pulse: `Permissions`, `Role_Permissions`
+  - Costing (read path): `ProductBatchMaster`, `ProductBatchMS`, `BatchStatusHistory`, `ProcessMaster`, `ProcessStage`
+- Events added/changed: None
+- Reminder rules added/changed: None
+- Roles/permissions/users changes:
+  - Added `Permissions` row:
+    - `Permission_ID=production_view_batch`
+    - `Menu_Label=View Batch`
+    - `Menu_Parent=MANAGE_PRODUCTION`
+    - `Action_Type=RUN_STUB`
+    - `Action_Target=VIEW_BATCH`
+  - Added `Role_Permissions` mapping:
+    - `Production_Manager -> production_view_batch`
+    - `System_Admin -> production_view_batch`
+- Code files changed:
+  - `pulse/integrations/production.py`
+  - `pulse/main.py`
+- Test steps:
+  - Supervisor path: `My MS Jobs -> View By Batch No -> select batch` shows overview + inline `View Flow Details | View Timeline`.
+  - Supervisor action checks:
+    - Current-stage supervisor can use `Mark Stage Done`.
+    - Next-stage supervisor can use `Confirm Hand-off`.
+    - Next-stage supervisor can reject handoff with remarks (`Reject Handoff`).
+  - My Jobs queue behavior:
+    - Default view is `My Pending Actions` (handoff pending + current pending completion only).
+    - `View All` shows all approved batches and flows.
+    - Handoff-pending rows are visible to both current and next-stage supervisors with role-specific action context.
+  - Admin/PM path: `Manage Production -> View Batch -> select batch` opens same tracker.
+- Rollback plan:
+  - Set `production_view_batch` inactive or remove role mappings in `Role_Permissions`.
+  - Revert code changes in `pulse/integrations/production.py` and `pulse/main.py`.
+- Notes:
+  - Flow snapshot legend uses status icons for done, running, pending, and handoff pending.
+  - Tracker uses inline keyboard callbacks for drill-down; no Telegram color styling dependency.
+
 ## E) Change Checklist (Before Marking Done)
 
 1. Access control tested with real role accounts.
@@ -190,6 +231,7 @@ These are the permission IDs currently referenced directly by code.
 - `reminder_manage`: opens Reminder Rules stub.
 - `production_my_ms_jobs`: opens supervisor MS stage queue.
 - `production_my_ms_schedule`: opens supervisor batch scheduling queue.
+- `production_view_batch`: opens batch tracker list under `Manage Production` for `System_Admin` and `Production_Manager`.
 
 Related action targets used by menu routing:
 
@@ -198,6 +240,7 @@ Related action targets used by menu routing:
 - `PRODUCTION_PENDING_APPROVALS`: opens production batch approval flow.
 - `MY_MS_JOBS`: opens stage-based MS job queue for current supervisor role.
 - `MY_MS_SCHEDULE`: opens supervisor schedule queue and propagates schedule date to all MS rows in selected batch.
+- `VIEW_BATCH`: opens batch tracker list and batch overview+drill-down screens.
 
 ## G) Event IDs In Use (Code Reference)
 
@@ -234,6 +277,9 @@ These are event IDs currently dispatched by application workflows/reminders.
   - Intermediate stage transitions set status to `<Next Stage> Pending`.
   - Transition into final stage sets status to `In <Final Stage>`.
   - Completing final stage sets status to `Cutting Completed`.
+  - Marking done before handoff acceptance sets status to `Done - Pending Confirmation`.
+  - Next-stage supervisor can accept handoff (advances flow) or reject with remarks (returns row to previous stage pending).
+  - Default `My Pending Actions` queue shows only actionable rows for logged-in supervisor; `View All` is full visibility.
 - Legacy compatibility: if no stage rows are found for a process ref, code falls back to parsing legacy text sequence.
 
 ## I) Phase 1 Migration Registry
@@ -323,3 +369,4 @@ Existing tables changed for this requirement:
 2. Prefer role subscriptions for manager/admin visibility, user subscription only for exceptions.
 3. Add one smoke-test scenario per release (create -> approve -> status change -> reminder).
 4. Review this file at every PR merge that touches roles, notifications, or reminders.
+

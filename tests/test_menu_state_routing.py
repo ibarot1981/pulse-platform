@@ -47,7 +47,7 @@ class _DummyContext:
 
 
 class MenuStateRoutingTests(unittest.IsolatedAsyncioTestCase):
-    def test_list_ms_jobs_for_user_role_returns_only_pending_jobs_for_current_role(self):
+    def test_list_ms_jobs_for_user_role_includes_handoff_pending_for_visibility(self):
         class _FakeCostingClient:
             def get_records(self, table: str):
                 if table == "ProductBatchMS":
@@ -124,7 +124,7 @@ class MenuStateRoutingTests(unittest.IsolatedAsyncioTestCase):
                 return ""
 
         rows = production._list_ms_jobs_for_user_role(_FakeRepo(), "SupervisorA")
-        self.assertEqual([row.get("id") for row in rows], [1])
+        self.assertEqual([row.get("id") for row in rows], [1, 3])
 
     async def test_my_ms_jobs_filter_routes_to_next_stage_selector(self):
         context = _DummyContext(
