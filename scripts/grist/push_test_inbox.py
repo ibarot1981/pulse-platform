@@ -138,9 +138,12 @@ def main() -> None:
         print(f"Processed pending rows immediately: {processed_count}")
 
     if args.render:
+        env = os.environ.copy()
+        env["PYTHONPATH"] = env.get("PYTHONPATH", ".") or "."
         result = subprocess.run(
             [sys.executable, "scripts/grist/render_test_outbox_preview.py"],
             check=True,
+            env=env,
         )
         if result.returncode == 0:
             print("Rendered preview: artifacts/test_preview/outbox_preview.html")

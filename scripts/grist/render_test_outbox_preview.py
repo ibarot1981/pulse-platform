@@ -3,10 +3,14 @@ from __future__ import annotations
 import html
 import json
 import os
+import sys
 from pathlib import Path
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
+
+if __package__ in (None, ""):
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from pulse.core.grist_client import GristClient
 from pulse.runtime import test_api_key, test_doc_id
