@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import subprocess
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
@@ -13,6 +14,7 @@ if __package__ in (None, ""):
 
 from pulse.core.grist_client import GristClient
 from pulse.runtime import runtime_mode, test_api_key, test_doc_id
+from pulse.testing.harness import process_pending_once
 
 
 load_dotenv()
@@ -83,6 +85,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--session", required=True, help="Session ID, e.g. sim-e2e-001")
     parser.add_argument("--actor", required=True, help="Actor Telegram ID from Pulse Users.Telegram_ID")
     parser.add_argument("--role", default="", help="Optional actor role label for traceability")
+    parser.add_argument("--process-now", action="store_true", help="Immediately process pending Test_Inbox rows once.")
+    parser.add_argument("--render", action="store_true", help="Render HTML preview after insert/process.")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--text", help="Text payload (simulates user message)")
     group.add_argument("--callback", help="Callback payload (simulates inline button click)")
@@ -127,6 +131,19 @@ def main() -> None:
         f"Inserted Test_Inbox row: id={row_id} session={args.session} actor={args.actor} "
         f"type={input_type} role={actor_role or '(blank)'}"
     )
+
+    processed_count = 0
+    if args.process_now:
+        processed_count = process_pending_once()
+        print(f"Processed pending rows immediately: {processed_count}")
+
+    if args.render:
+        result = subprocess.run(
+            [sys.executable, "scripts/grist/render_test_outbox_preview.py"],
+            check=True,
+        )
+        if result.returncode == 0:
+            print("Rendered preview: artifacts/test_preview/outbox_preview.html")
 
 
 if __name__ == "__main__":

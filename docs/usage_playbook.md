@@ -387,6 +387,11 @@ python scripts/grist/push_test_inbox.py --session sim-e2e-001 --actor <telegram_
 python scripts/grist/push_test_inbox.py --session sim-e2e-001 --actor <telegram_id> --callback "prodappr:approve:<batch_id>"
 ```
 
+Fast local path (no poll wait, with preview refresh):
+```powershell
+python scripts/grist/push_test_inbox.py --session sim-e2e-001 --actor <telegram_id> --text "/start" --process-now --render
+```
+
 3. Render HTML preview (one command):
 ```powershell
 .\scripts\grist\render_preview.cmd

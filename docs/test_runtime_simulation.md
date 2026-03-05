@@ -102,6 +102,12 @@ python scripts/grist/push_test_inbox.py --session sim-e2e-001 --actor <telegram_
 python scripts/grist/push_test_inbox.py --session sim-e2e-001 --actor <telegram_id> --callback "prodappr:approve:42"
 ```
 
+Fast local path (insert + process now + render preview):
+
+```powershell
+python scripts/grist/push_test_inbox.py --session sim-e2e-001 --actor <telegram_id> --text "/start" --process-now --render
+```
+
 Optional role tag for traceability:
 
 ```powershell
@@ -113,6 +119,8 @@ Notes:
 - Requires `PULSE_RUNTIME_MODE=TEST`.
 - Writes to `Test_Inbox` in `PULSE_TEST_DOC_ID`.
 - Output prints inserted inbox row id.
+- `--process-now` immediately processes pending rows once (without waiting for poll cycle).
+- `--render` regenerates `artifacts/test_preview/outbox_preview.html`.
 
 ## End-to-End Walkthrough (Batch -> Approval -> Schedule -> Handoff Complete)
 
