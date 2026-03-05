@@ -75,6 +75,8 @@ from pulse.menu.submenu import (
     show_manage_users_menu,
     show_user_context_menu,
 )
+from pulse.runtime import is_test_mode, runtime_mode, test_doc_id
+from pulse.testing.harness import run_test_runtime_loop
 from pulse.utils.pdf_export import write_table_pdf
 
 DENY_MESSAGE = "You are not registered in Pulse. Please contact administrator."
@@ -589,6 +591,11 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 def main():
+    if is_test_mode():
+        print(f"Pulse running in TEST mode. test_doc_id={test_doc_id()}")
+        run_test_runtime_loop()
+        return
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -597,7 +604,7 @@ def main():
     app.add_handler(MessageHandler(filters.COMMAND, fallback_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, fallback_text))
 
-    print("Pulse running...")
+    print(f"Pulse running in {runtime_mode()} mode...")
     app.run_polling()
 
 

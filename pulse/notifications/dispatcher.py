@@ -26,11 +26,19 @@ async def dispatch_event(
                 if "reply_markup" in rendered:
                     rendered_markup = rendered["reply_markup"]
 
-            await telegram_bot.send_message(
-                chat_id=user["telegram_id"],
-                text=rendered_message,
-                reply_markup=rendered_markup,
-            )
+            if hasattr(telegram_bot, "send_message_with_metadata"):
+                await telegram_bot.send_message_with_metadata(
+                    chat_id=user["telegram_id"],
+                    text=rendered_message,
+                    reply_markup=rendered_markup,
+                    recipient=user,
+                )
+            else:
+                await telegram_bot.send_message(
+                    chat_id=user["telegram_id"],
+                    text=rendered_message,
+                    reply_markup=rendered_markup,
+                )
 
             log_event(
                 user["user_id"],

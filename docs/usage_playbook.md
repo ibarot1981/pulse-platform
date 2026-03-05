@@ -370,3 +370,29 @@ Existing tables changed for this requirement:
 3. Add one smoke-test scenario per release (create -> approve -> status change -> reminder).
 4. Review this file at every PR merge that touches roles, notifications, or reminders.
 
+## K) TEST Simulator Quick Commands
+
+Use these for runtime simulation + preview without Telegram:
+
+1. Start simulator runtime:
+```powershell
+$env:PULSE_RUNTIME_MODE="TEST"
+$env:PULSE_TEST_DOC_ID="tSFZW3ybtD46ug2q76iMML"
+python -m pulse.main
+```
+
+2. Push test inbox action from CLI:
+```powershell
+python scripts/grist/push_test_inbox.py --session sim-e2e-001 --actor <telegram_id> --text "/start"
+python scripts/grist/push_test_inbox.py --session sim-e2e-001 --actor <telegram_id> --callback "prodappr:approve:<batch_id>"
+```
+
+3. Render HTML preview (one command):
+```powershell
+.\scripts\grist\render_preview.cmd
+```
+
+Preview output:
+
+- `artifacts/test_preview/outbox_preview.html`
+

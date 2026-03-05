@@ -92,6 +92,13 @@ class Settings:
     ENABLE_NOTIFICATIONS: bool
     ENABLE_ESCALATION: bool
 
+    # Runtime channel mode
+    PULSE_RUNTIME_MODE: str
+    PULSE_TEST_DOC_ID: str
+    PULSE_TEST_API_KEY: str
+    PULSE_TEST_POLL_INTERVAL_SECONDS: int
+    PULSE_TEST_ALLOW_PROD_WRITES: bool
+
 
 # -------------------------------------------------
 # Instantiate Settings
@@ -134,6 +141,12 @@ settings = Settings(
     ENABLE_TASKS=get_bool("ENABLE_TASKS", True),
     ENABLE_NOTIFICATIONS=get_bool("ENABLE_NOTIFICATIONS", True),
     ENABLE_ESCALATION=get_bool("ENABLE_ESCALATION", True),
+
+    PULSE_RUNTIME_MODE=get_env("PULSE_RUNTIME_MODE", required=False, default="LIVE"),
+    PULSE_TEST_DOC_ID=get_env("PULSE_TEST_DOC_ID", required=False, default=""),
+    PULSE_TEST_API_KEY=get_env("PULSE_TEST_API_KEY", required=False, default=""),
+    PULSE_TEST_POLL_INTERVAL_SECONDS=get_int("PULSE_TEST_POLL_INTERVAL_SECONDS", 30),
+    PULSE_TEST_ALLOW_PROD_WRITES=get_bool("PULSE_TEST_ALLOW_PROD_WRITES", False),
 )
 
 
