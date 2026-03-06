@@ -1466,7 +1466,7 @@ def _batch_created_recipient_renderer(batch_id: int):
     def _render(recipient: dict) -> dict:
         if _is_approval_actor_subscriber(recipient):
             return {"reply_markup": approval_markup}
-        return {"reply_markup": None}
+        return {"skip": True}
 
     return _render
 

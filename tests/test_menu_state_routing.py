@@ -47,6 +47,16 @@ class _DummyContext:
 
 
 class MenuStateRoutingTests(unittest.IsolatedAsyncioTestCase):
+    def test_batch_created_renderer_skips_non_approver_roles(self):
+        renderer = production._batch_created_recipient_renderer(9)
+
+        approver_render = renderer({"role_id": "R01", "role_name": "Production_Manager"})
+        non_approver_render = renderer({"role_id": "R03", "role_name": "Production_Supervisor"})
+
+        self.assertIn("reply_markup", approver_render)
+        self.assertIsNotNone(approver_render.get("reply_markup"))
+        self.assertEqual(non_approver_render.get("skip"), True)
+
     def test_list_ms_jobs_for_user_role_includes_handoff_pending_for_visibility(self):
         class _FakeCostingClient:
             def get_records(self, table: str):

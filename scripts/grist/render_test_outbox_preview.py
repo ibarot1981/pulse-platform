@@ -96,7 +96,7 @@ def _buttons_html(buttons_json: str) -> str:
 
             tooltip = html.escape(f"{action_label}: {action_value}")
             parts.append(
-                f'<span class="btn-wrap"><button class="btn" title="{tooltip}">{label}</button>'
+                f'<span class="btn-wrap"><span class="btn" title="{tooltip}">{label}</span>'
                 f'<span class="btn-tip">{tooltip}</span></span>'
             )
         parts.append("</div>")
@@ -106,9 +106,12 @@ def _buttons_html(buttons_json: str) -> str:
 
 def render_html(rows: list[dict]) -> str:
     cards: list[str] = []
+    unique_users: set[str] = set()
     for row in rows:
         fields = row.get("fields", {})
-        recipient = html.escape(str(fields.get("recipient_user_id", "")))
+        recipient_raw = str(fields.get("recipient_user_id", "")).strip()
+        recipient = html.escape(recipient_raw)
+        recipient_attr = html.escape(recipient_raw, quote=True)
         role = html.escape(str(fields.get("recipient_role", "")))
         created_at = html.escape(_format_created_at(fields.get("created_at")))
         source = html.escape(str(fields.get("source", "")))
@@ -116,9 +119,10 @@ def render_html(rows: list[dict]) -> str:
         parse_mode = html.escape(str(fields.get("parse_mode", "")))
         text = html.escape(str(fields.get("message_text", ""))).replace("\n", "<br>")
         buttons = _buttons_html(str(fields.get("buttons_json", "")))
+        unique_users.add(recipient_raw)
         cards.append(
             f"""
-            <article class="msg">
+            <article class="msg" data-user="{recipient_attr}">
               <div class="meta">
                 <span>User: {recipient}</span>
                 <span>Role: {role or "-"}</span>
@@ -134,6 +138,12 @@ def render_html(rows: list[dict]) -> str:
         )
 
     body = "\n".join(cards) if cards else '<p class="empty">No outbox rows found.</p>'
+    user_options = ['<option value="">All users</option>']
+    for user in sorted(u for u in unique_users if u):
+        escaped = html.escape(user)
+        user_options.append(f'<option value="{escaped}">{escaped}</option>')
+    user_options_html = "".join(user_options)
+
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -157,10 +167,30 @@ def render_html(rows: list[dict]) -> str:
     .msg {{ background: #f8fbff80; border: 1px solid #cbd5e1; border-radius: 12px; padding: 10px; margin-bottom: 12px; }}
     .meta {{ display: flex; flex-wrap: wrap; gap: 8px 12px; color: var(--meta); font-size: 12px; margin-bottom: 8px; }}
     .bubble {{ background: var(--bubble); border-radius: 12px; padding: 10px 12px; box-shadow: 0 1px 0 #cbd5e1; line-height: 1.35; white-space: normal; }}
+    .toolbar {{ margin: 12px 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }}
+    .toolbar label {{ font-size: 13px; color: var(--meta); }}
+    .toolbar select {{
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      padding: 4px 8px;
+      background: #fff;
+      color: var(--ink);
+    }}
+    .rows-info {{ font-size: 12px; color: var(--meta); }}
     .buttons {{ margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }}
     .btn-row {{ display: flex; flex-wrap: wrap; gap: 6px; }}
     .btn-wrap {{ position: relative; display: inline-flex; }}
-    .btn {{ background: var(--btn); border: 1px solid var(--btn-border); border-radius: 8px; padding: 4px 10px; font-size: 13px; color: #1e3a8a; }}
+    .btn {{
+      background: var(--btn);
+      border: 1px solid var(--btn-border);
+      border-radius: 8px;
+      padding: 4px 10px;
+      font-size: 13px;
+      color: #1e3a8a;
+      display: inline-block;
+      user-select: text;
+      cursor: text;
+    }}
     .btn-tip {{
       display: none;
       position: absolute;
@@ -176,6 +206,7 @@ def render_html(rows: list[dict]) -> str:
       max-width: 560px;
       overflow: hidden;
       text-overflow: ellipsis;
+      pointer-events: none;
     }}
     .btn-wrap:hover .btn-tip {{ display: block; }}
     .empty {{ color: var(--meta); font-style: italic; }}
@@ -187,8 +218,35 @@ def render_html(rows: list[dict]) -> str:
     <h1>Pulse TEST Outbox Preview</h1>
     <div class="hint">Render is Telegram-like for message structure, text, and buttons. Hover a button to inspect callback payload.</div>
     <div class="badge">Rows: {len(rows)}</div>
+    <div class="toolbar">
+      <label for="userFilter">Filter by user:</label>
+      <select id="userFilter">{user_options_html}</select>
+      <span id="rowsInfo" class="rows-info"></span>
+    </div>
     <section style="margin-top: 14px;">{body}</section>
   </main>
+  <script>
+    (function () {{
+      const filter = document.getElementById("userFilter");
+      const rowsInfo = document.getElementById("rowsInfo");
+      const rows = Array.from(document.querySelectorAll(".msg"));
+
+      function applyFilter() {{
+        const selected = filter.value;
+        let visible = 0;
+        for (const row of rows) {{
+          const user = row.getAttribute("data-user") || "";
+          const show = !selected || user === selected;
+          row.style.display = show ? "" : "none";
+          if (show) visible += 1;
+        }}
+        rowsInfo.textContent = `Showing ${{visible}} of ${{rows.length}} messages`;
+      }}
+
+      filter.addEventListener("change", applyFilter);
+      applyFilter();
+    }})();
+  </script>
 </body>
 </html>"""
 
