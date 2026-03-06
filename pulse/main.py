@@ -471,8 +471,13 @@ async def fallback_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         AWAITING_SCHEDULE_DATE_STATE,
     }
     if state in production_states:
+        previous_state = state
         handled = await handle_production_state_text(update, context, text)
         if handled:
+            # Batch create confirmation already sends final status text; avoid immediate
+            # duplicate "Welcome to Pulse" menu message right after submit.
+            if previous_state == CONFIRMING_BATCH_STATE and text == "Yes":
+                return
             if context.user_data.get("menu_state") not in production_states:
                 await _show_menu_for_state(update, context)
             return

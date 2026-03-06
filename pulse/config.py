@@ -21,3 +21,6 @@ PULSE_TEST_DOC_ID = os.getenv("PULSE_TEST_DOC_ID", "")
 PULSE_TEST_API_KEY = os.getenv("PULSE_TEST_API_KEY", "")
 PULSE_TEST_POLL_INTERVAL_SECONDS = int(os.getenv("PULSE_TEST_POLL_INTERVAL_SECONDS", "30"))
 PULSE_TEST_ALLOW_PROD_WRITES = os.getenv("PULSE_TEST_ALLOW_PROD_WRITES", "").lower() in ("1", "true", "yes")
+
+# Display format used for date/time text in notifications.
+NOTIFICATION_DATETIME_FORMAT = os.getenv("NOTIFICATION_DATETIME_FORMAT", "%d-%m-%Y %H:%M:%S")

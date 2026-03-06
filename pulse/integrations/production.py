@@ -8,6 +8,7 @@ import re
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 import requests
 
+from pulse.config import NOTIFICATION_DATETIME_FORMAT
 from pulse.data.production_repo import ProductionRepo
 from pulse.menu.submenu import BACK_LABEL, MAIN_MENU_LABEL, MAIN_STATE, set_main_menu_state
 from pulse.notifications.dispatcher import dispatch_event
@@ -458,7 +459,7 @@ def _build_ms_jobs_group_header(
 
 
 def _parse_iso_datetime(value) -> datetime | None:
-    if not value:
+    if value is None:
         return None
     if isinstance(value, datetime):
         return value
@@ -477,6 +478,10 @@ def _parse_iso_datetime(value) -> datetime | None:
         except (TypeError, ValueError, OSError):
             return None
     try:
+        return datetime.utcfromtimestamp(float(raw_value))
+    except (TypeError, ValueError, OSError):
+        pass
+    try:
         return datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
     except ValueError:
         pass
@@ -492,6 +497,18 @@ def _format_dt_short(value: datetime | None) -> str:
     if not value:
         return "-"
     return value.date().isoformat()
+
+
+def _format_notification_datetime(value) -> str:
+    parsed = _parse_iso_datetime(value)
+    if not parsed:
+        return "-"
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone().replace(tzinfo=None)
+    try:
+        return parsed.strftime(NOTIFICATION_DATETIME_FORMAT)
+    except Exception:
+        return parsed.strftime("%d-%m-%Y %H:%M:%S")
 
 
 def _elapsed_days_since(value: datetime | None) -> int | None:
@@ -3107,7 +3124,11 @@ async def approve_batches_by_ids(update, context, batch_ids: list[int]) -> list[
             await _notify_event(
                 context.bot,
                 "production_batch_approved",
-                f"Batch approved: {batch_no} | Start Date: {fields.get('start_date', '')} | Status: Schedule Pending",
+                (
+                    f"Batch approved: {batch_no} | "
+                    f"Start Date: {_format_notification_datetime(fields.get('start_date'))} | "
+                    "Status: Schedule Pending"
+                ),
                 context={"batch_id": batch_id},
             )
 
@@ -3418,7 +3439,8 @@ async def handle_production_callback(update, context) -> bool:
     if action == "approve":
         approved_batch_numbers = await approve_batches_by_ids(update, context, [batch_id])
         if approved_batch_numbers:
-            await query.message.reply_text(f"Approved: {', '.join(approved_batch_numbers)}")
+            # Notification event already confirms successful approval.
+            return True
         else:
             await query.message.reply_text(f"Could not approve batch {batch_no}.")
         return True
@@ -3454,7 +3476,7 @@ async def set_master_scheduled_date(
     await _notify_event(
         context.bot,
         "production_batch_scheduled",
-        f"Batch scheduled: {batch_no} | Scheduled Date: {scheduled_date_iso}",
+        f"Batch scheduled: {batch_no} | Scheduled Date: {_format_notification_datetime(scheduled_date_iso)}",
         context={"batch_id": batch_id},
     )
 
@@ -3736,8 +3758,6 @@ async def handle_production_state_text(update, context, text: str) -> bool:
         selection["records"] = ProductionRepo().list_pending_approvals()
         selection["page"] = 0
 
-        if approved_batch_numbers:
-            await _reply(update, f"Approved: {', '.join(approved_batch_numbers)}")
         if rejected_batch_numbers:
             await _reply(update, f"Rejected: {', '.join(rejected_batch_numbers)}")
 

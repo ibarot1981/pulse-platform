@@ -1,3 +1,4 @@
+import re
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -46,7 +47,42 @@ class _DummyContext:
         self.user_data = user_data
 
 
+class _DummyBot:
+    pass
+
+
+class _DummyCallbackMessage:
+    def __init__(self):
+        self.replies: list[str] = []
+
+    async def reply_text(self, text: str, **kwargs):
+        self.replies.append(str(text))
+
+
+class _DummyCallbackQuery:
+    def __init__(self, data: str):
+        self.data = data
+        self.message = _DummyCallbackMessage()
+        self.answered = False
+
+    async def answer(self, *args, **kwargs):
+        self.answered = True
+
+
+class _DummyCallbackUpdate:
+    def __init__(self, data: str):
+        self.callback_query = _DummyCallbackQuery(data)
+
+
 class MenuStateRoutingTests(unittest.IsolatedAsyncioTestCase):
+    def test_parse_iso_datetime_supports_decimal_epoch_text(self):
+        parsed = production._parse_iso_datetime("1772814858.972331")
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.year, 2026)
+
+    def test_format_notification_datetime_default_pattern(self):
+        self.assertEqual(production._format_notification_datetime(0), "01-01-1970 00:00:00")
+
     def test_batch_created_renderer_skips_non_approver_roles(self):
         renderer = production._batch_created_recipient_renderer(9)
 
@@ -217,6 +253,89 @@ class MenuStateRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(context.user_data.get("menu_state"), MAIN_STATE)
         show_menu.assert_awaited_once()
+
+    async def test_confirm_batch_yes_does_not_auto_show_main_menu_again(self):
+        async def _handle_production(update, context, text):
+            context.user_data["menu_state"] = MAIN_STATE
+            return True
+
+        with (
+            patch("pulse.main.load_user_access", new=AsyncMock(return_value=True)),
+            patch("pulse.main._menu_actions", return_value={}),
+            patch("pulse.main._show_menu_for_state", new=AsyncMock()) as show_menu,
+            patch("pulse.main._reply_text", new=AsyncMock()) as reply_text,
+            patch("pulse.main.handle_production_state_text", new=_handle_production),
+        ):
+            context = _DummyContext({"menu_state": CONFIRMING_BATCH_STATE, "is_registered": True, "access_loaded": True})
+            update = _DummyUpdate("Yes")
+            await fallback_text(update, context)
+
+        self.assertEqual(show_menu.await_count, 0)
+        self.assertEqual(reply_text.await_count, 0)
+
+    async def test_approval_callback_success_does_not_send_duplicate_reply(self):
+        class _FakeRepo:
+            def get_role_name_by_user_id(self, user_id: str) -> str:
+                return "Production_Manager"
+
+            def get_costing_user_ref_by_user_id(self, user_id: str):
+                return 100
+
+            def get_master_by_id(self, batch_id: int):
+                return {"id": batch_id, "fields": {"batch_no": "B-1", "approval_status": "Pending Approval"}}
+
+        update = _DummyCallbackUpdate("prodappr:approve:1")
+        context = _DummyContext({"user": {"user_id": "U_PM"}})
+
+        with (
+            patch("pulse.integrations.production.ProductionRepo", return_value=_FakeRepo()),
+            patch("pulse.integrations.production._is_production_manager", return_value=True),
+            patch("pulse.integrations.production.approve_batches_by_ids", new=AsyncMock(return_value=["B-1"])),
+        ):
+            handled = await production.handle_production_callback(update, context)
+
+        self.assertTrue(handled)
+        self.assertTrue(update.callback_query.answered)
+        self.assertEqual(update.callback_query.message.replies, [])
+
+    async def test_approve_batch_notification_formats_start_date(self):
+        class _FakeRepo:
+            def get_costing_user_ref_by_user_id(self, user_id: str):
+                return 100
+
+        context = _DummyContext({"user": {"user_id": "U_PM"}})
+        context.bot = _DummyBot()
+        update = _DummyUpdate("irrelevant")
+
+        notify_mock = AsyncMock()
+        with (
+            patch("pulse.integrations.production.ProductionRepo", return_value=_FakeRepo()),
+            patch("pulse.integrations.production._is_production_manager", return_value=True),
+            patch(
+                "pulse.integrations.production.approve_batch_service",
+                return_value={
+                    "master": {
+                        "fields": {
+                            "batch_no": "B-1",
+                            "start_date": "1772814858.972331",
+                        }
+                    },
+                    "ms_rows": [],
+                    "row_cutlist_map": {},
+                    "cutlist_sections": [],
+                },
+            ),
+            patch("pulse.integrations.production._attach_ms_cutlist_pdf", return_value=None),
+            patch("pulse.integrations.production._attach_ms_row_cutlist_pdfs", return_value=None),
+            patch("pulse.integrations.production._notify_ms_first_stage", new=AsyncMock()),
+            patch("pulse.integrations.production._notify_event", new=notify_mock),
+        ):
+            await production.approve_batches_by_ids(update, context, [1])
+
+        message = notify_mock.await_args.args[2]
+        self.assertIn("Batch approved: B-1 | Start Date:", message)
+        self.assertNotIn("1772814858.972331", message)
+        self.assertRegex(message, r"Start Date: \d{2}-\d{2}-\d{4} \d{2}:\d{2}:\d{2}")
 
 
 if __name__ == "__main__":
