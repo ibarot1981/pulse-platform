@@ -4,11 +4,13 @@ from datetime import datetime, timedelta
 from io import BytesIO
 import tempfile
 import re
+from datetime import timezone
+from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 import requests
 
-from pulse.config import NOTIFICATION_DATETIME_FORMAT
+from pulse.config import NOTIFICATION_DATETIME_FORMAT, NOTIFICATION_TIMEZONE
 from pulse.data.production_repo import ProductionRepo
 from pulse.menu.submenu import BACK_LABEL, MAIN_MENU_LABEL, MAIN_STATE, set_main_menu_state
 from pulse.notifications.dispatcher import dispatch_event
@@ -503,12 +505,28 @@ def _format_notification_datetime(value) -> str:
     parsed = _parse_iso_datetime(value)
     if not parsed:
         return "-"
-    if parsed.tzinfo is not None:
-        parsed = parsed.astimezone().replace(tzinfo=None)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = parsed.astimezone(timezone.utc)
+    target_tz = _resolve_notification_timezone()
+    parsed = parsed.astimezone(target_tz)
     try:
         return parsed.strftime(NOTIFICATION_DATETIME_FORMAT)
     except Exception:
-        return parsed.strftime("%d-%m-%Y %H:%M:%S")
+        return parsed.strftime("%d-%m-%Y %H:%M:%S %Z")
+
+
+def _resolve_notification_timezone():
+    tz_name = str(NOTIFICATION_TIMEZONE or "Asia/Calcutta").strip() or "Asia/Calcutta"
+    for candidate in (tz_name, "Asia/Kolkata"):
+        try:
+            return ZoneInfo(candidate)
+        except Exception:
+            continue
+    if tz_name in {"Asia/Calcutta", "Asia/Kolkata"}:
+        return timezone(timedelta(hours=5, minutes=30), name="IST")
+    return timezone.utc
 
 
 def _elapsed_days_since(value: datetime | None) -> int | None:

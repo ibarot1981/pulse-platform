@@ -81,7 +81,8 @@ class MenuStateRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(parsed.year, 2026)
 
     def test_format_notification_datetime_default_pattern(self):
-        self.assertEqual(production._format_notification_datetime(0), "01-01-1970 00:00:00")
+        with patch("pulse.integrations.production.NOTIFICATION_TIMEZONE", "Asia/Calcutta"):
+            self.assertEqual(production._format_notification_datetime(0), "01-01-1970 05:30:00 IST")
 
     def test_batch_created_renderer_skips_non_approver_roles(self):
         renderer = production._batch_created_recipient_renderer(9)
@@ -335,7 +336,7 @@ class MenuStateRoutingTests(unittest.IsolatedAsyncioTestCase):
         message = notify_mock.await_args.args[2]
         self.assertIn("Batch approved: B-1 | Start Date:", message)
         self.assertNotIn("1772814858.972331", message)
-        self.assertRegex(message, r"Start Date: \d{2}-\d{2}-\d{4} \d{2}:\d{2}:\d{2}")
+        self.assertRegex(message, r"Start Date: \d{2}-\d{2}-\d{4} \d{2}:\d{2}:\d{2} [A-Z]{2,5}")
 
 
 if __name__ == "__main__":
