@@ -5,7 +5,8 @@ import json
 import os
 import sys
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
@@ -16,6 +17,9 @@ from pulse.core.grist_client import GristClient
 from pulse.runtime import test_api_key, test_doc_id
 
 load_dotenv()
+
+PREVIEW_TIMEZONE = os.getenv("NOTIFICATION_TIMEZONE", os.getenv("TIMEZONE", "Asia/Calcutta"))
+PREVIEW_DATETIME_FORMAT = os.getenv("NOTIFICATION_DATETIME_FORMAT", "%d-%m-%Y %H:%M:%S %Z")
 
 
 def _build_client() -> GristClient:
@@ -36,12 +40,30 @@ def _parse_json(raw: str) -> dict:
 
 
 def _format_created_at(value) -> str:
+    def _resolve_preview_timezone():
+        tz_name = str(PREVIEW_TIMEZONE or "Asia/Calcutta").strip() or "Asia/Calcutta"
+        for candidate in (tz_name, "Asia/Kolkata"):
+            try:
+                return ZoneInfo(candidate)
+            except Exception:
+                continue
+        if tz_name in {"Asia/Calcutta", "Asia/Kolkata"}:
+            return timezone(timedelta(hours=5, minutes=30), name="IST")
+        return timezone.utc
+
+    preview_tz = _resolve_preview_timezone()
+
+    def _to_preview_tz(dt: datetime) -> datetime:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(preview_tz)
+
     if value is None:
         return "-"
     if isinstance(value, (int, float)):
         try:
             dt = datetime.fromtimestamp(float(value), tz=timezone.utc)
-            return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+            return _to_preview_tz(dt).strftime(PREVIEW_DATETIME_FORMAT)
         except (ValueError, OSError):
             return str(value)
     text = str(value).strip()
@@ -50,9 +72,7 @@ def _format_created_at(value) -> str:
     try:
         normalized = text.replace("Z", "+00:00")
         dt = datetime.fromisoformat(normalized)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        return _to_preview_tz(dt).strftime(PREVIEW_DATETIME_FORMAT)
     except ValueError:
         return text
 
