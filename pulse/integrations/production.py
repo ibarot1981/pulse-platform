@@ -569,7 +569,7 @@ def _format_notification_datetime(value) -> str:
     if not parsed:
         return "-"
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=_resolve_notification_timezone())
+        parsed = parsed.replace(tzinfo=timezone.utc)
     else:
         parsed = parsed.astimezone(timezone.utc)
     target_tz = _resolve_notification_timezone()
