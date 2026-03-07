@@ -424,6 +424,67 @@ def _build_ms_stage_pending_message(
     ]
     return "\n".join(lines)
 
+
+def _resolve_next_stage_for_row(repo: ProductionRepo, fields: dict) -> str:
+    row = fields or {}
+    next_stage = str(row.get("next_stage_name") or "").strip()
+    if next_stage:
+        return next_stage
+    process_seq = _normalize_process_seq(row)
+    stages = repo.get_process_stage_names(process_seq)
+    if not stages:
+        return ""
+    stage_name = str(row.get("current_stage_name") or "").strip()
+    try:
+        current_index = int(row.get("current_stage_index") or 0)
+    except (TypeError, ValueError):
+        current_index = 0
+    if not (0 <= current_index < len(stages)):
+        try:
+            current_index = stages.index(stage_name)
+        except ValueError:
+            current_index = 0
+    return _get_next_stage_name(stages, current_index)
+
+
+def _build_ms_batch_approval_summary_message(
+    repo: ProductionRepo,
+    batch_no: str,
+    batch_by: str,
+    approved_by: str,
+    status: str,
+    rows: list[dict],
+) -> str:
+    lines = [
+        f"\U0001F7E2 New Batch Approved : {batch_no}",
+        f"\U0001F464 Batch By: {batch_by}, \U0001F464 Approved By: {approved_by}",
+        f"Status : {status}",
+        "Stages:",
+    ]
+    if not rows:
+        lines.append("-")
+        return "\n".join(lines)
+
+    for idx, row in enumerate(rows, start=1):
+        fields = row.get("fields", row)
+        current_stage = str(fields.get("current_stage_name") or "-")
+        next_stage = _resolve_next_stage_for_row(repo, fields)
+        lines.append(f"{idx}. {current_stage} to {next_stage or '-'}")
+    return "\n".join(lines)
+
+
+def _build_ms_batch_view_detail_keyboard(batch_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "View Batch Detail",
+                    callback_data=_ms_batch_callback_data("vd", batch_id),
+                )
+            ]
+        ]
+    )
+
 def _build_ms_job_entry_text(
     index: int,
     part_name: str,
@@ -1402,7 +1463,7 @@ def _parse_ms_batch_callback_data(data: str) -> tuple[str, int, str, str] | None
     if len(parts) < 3 or parts[0] != _MS_BATCH_CB_PREFIX:
         return None
     action = str(parts[1] or "").strip()
-    if action not in {"ov", "sl", "fd", "ft", "dn", "cf"}:
+    if action not in {"ov", "sl", "vd", "fd", "ft", "dn", "cf"}:
         return None
     try:
         batch_id = int(parts[2])
@@ -1781,43 +1842,56 @@ async def _show_pending_approval_confirmation(update, context) -> None:
     await _reply(update, "\n".join(lines), [[_YES], [_REJECT], [_NO], [BACK_LABEL]])
 
 
-async def _notify_ms_first_stage(repo: ProductionRepo, context, batch_id: int, ms_rows: list[dict], batch_no: str) -> None:
-    batch_by = _get_batch_creator_name_map(repo, {batch_id}).get(batch_id, "")
+def _build_rows_by_stage_role(repo: ProductionRepo, ms_rows: list[dict]) -> dict[str, list[dict]]:
+    rows_by_role: dict[str, list[dict]] = {}
     for row in ms_rows:
-        row_id = row.get("id")
-        stage_name = str(row.get("current_stage_name") or "").strip()
+        fields = row.get("fields", row)
+        stage_name = str(fields.get("current_stage_name") or "").strip()
         if not stage_name:
             continue
-        supervisor_role = _resolve_supervisor_role_for_stage(repo, row.get("process_seq"), stage_name)
+        process_seq = _normalize_process_seq(fields)
+        supervisor_role = _resolve_supervisor_role_for_stage(repo, process_seq, stage_name)
         if not supervisor_role:
-            await _notify_stage_event(
-                context,
-                "ms_stage_pending",
-                batch_id,
-                f"MS stage mapping missing for batch {batch_no}: Stage {stage_name}. Please configure ProcessStage role mapping.",
-                supervisor_role="System_Admin",
-            )
+            continue
+        rows_by_role.setdefault(supervisor_role, []).append(row)
+    return rows_by_role
+
+
+async def _send_ms_batch_first_stage_detail_messages(
+    query,
+    context,
+    batch_id: int,
+) -> None:
+    repo = ProductionRepo()
+    batch = repo.get_master_by_id(batch_id)
+    if not batch:
+        await query.message.reply_text("Batch not found.")
+        return
+
+    batch_by_map = _get_batch_creator_name_map(repo, {batch_id})
+    batch_by = batch_by_map.get(batch_id, "-")
+    user = context.user_data.get("user", {})
+    user_role_name = repo.get_role_name_by_user_id(user.get("user_id", ""))
+    if not user_role_name:
+        await query.message.reply_text("Unable to resolve your role for batch details.")
+        return
+
+    rows = _ordered_ms_rows_for_batch(repo, batch_id)
+    batch_no = str(batch.get("fields", {}).get("batch_no") or "")
+    sent = 0
+    for row in rows:
+        fields = row.get("fields", {})
+        stage_name = str(fields.get("current_stage_name") or "").strip()
+        process_seq = _normalize_process_seq(fields)
+        row_role = _resolve_supervisor_role_for_stage(repo, process_seq, stage_name)
+        if row_role != user_role_name:
+            continue
+        row_id = row.get("id")
+        if not isinstance(row_id, int):
             continue
         part_name = _resolve_ms_row_part_text(repo, row)
-        qty = _format_qty(float(row.get("total_qty") or row.get("required_qty") or 0))
-        keyboard = build_schedule_inline_keyboard(batch_id)
-        if isinstance(row_id, int):
-            keyboard = build_stage_inline_keyboard(batch_id, row_id)
-        next_stage = str(row.get("next_stage_name") or "").strip()
-        if not next_stage:
-            process_seq = _normalize_process_seq(row)
-            stages = repo.get_process_stage_names(process_seq)
-            if stages:
-                try:
-                    current_index = int(row.get("current_stage_index") or 0)
-                except (TypeError, ValueError):
-                    current_index = 0
-                if not (0 <= current_index < len(stages)):
-                    try:
-                        current_index = stages.index(stage_name)
-                    except ValueError:
-                        current_index = 0
-                next_stage = _get_next_stage_name(stages, current_index)
+        qty = _format_qty(float(fields.get("total_qty") or fields.get("required_qty") or 0))
+        next_stage = _resolve_next_stage_for_row(repo, fields)
         message = _build_ms_stage_pending_message(
             batch_no=batch_no,
             batch_by=batch_by,
@@ -1826,13 +1900,60 @@ async def _notify_ms_first_stage(repo: ProductionRepo, context, batch_id: int, m
             next_stage=next_stage,
             qty=qty,
         )
+        await query.message.reply_text(message, reply_markup=build_stage_inline_keyboard(batch_id, row_id))
+        sent += 1
+
+    if sent == 0:
+        await query.message.reply_text("No batch flow details found for your role.")
+
+
+async def _notify_ms_first_stage(repo: ProductionRepo, context, batch_id: int, ms_rows: list[dict], batch_no: str) -> None:
+    batch = repo.get_master_by_id(batch_id)
+    if not batch:
+        return
+
+    master_fields = batch.get("fields", {})
+    status = str(master_fields.get("overall_status") or "Schedule Pending")
+    approved_by = str(context.user_data.get("user", {}).get("name") or "-")
+    batch_by_map = _get_batch_creator_name_map(repo, {batch_id})
+    batch_by = batch_by_map.get(batch_id, "-")
+
+    by_record_id, by_user_id = _build_costing_user_name_indexes(repo)
+    batch_by = batch_by or _resolve_costing_user_name(master_fields.get("created_by"), by_record_id, by_user_id) or "-"
+    rows_by_role = _build_rows_by_stage_role(repo, ms_rows)
+    for row in ms_rows:
+        fields = row.get("fields", row)
+        stage_name = str(fields.get("current_stage_name") or "").strip()
+        process_seq = _normalize_process_seq(fields)
+        supervisor_role = _resolve_supervisor_role_for_stage(repo, process_seq, stage_name)
+        if stage_name and not supervisor_role:
+            await _notify_stage_event(
+                context,
+                "ms_stage_pending",
+                batch_id,
+                f"MS stage mapping missing for batch {batch_no}: Stage {stage_name}. Please configure ProcessStage role mapping.",
+                supervisor_role="System_Admin",
+            )
+
+    if not rows_by_role:
+        return
+
+    for supervisor_role, role_rows in rows_by_role.items():
+        message = _build_ms_batch_approval_summary_message(
+            repo=repo,
+            batch_no=batch_no,
+            batch_by=batch_by,
+            approved_by=approved_by,
+            status=status,
+            rows=role_rows,
+        )
         await _notify_stage_event(
             context,
             "ms_stage_pending",
             batch_id,
             message,
             supervisor_role=supervisor_role,
-            reply_markup=keyboard,
+            reply_markup=_build_ms_batch_view_detail_keyboard(batch_id),
         )
 
 
@@ -3238,6 +3359,9 @@ async def handle_production_callback(update, context) -> bool:
         if action == "ov":
             text = _build_ms_batch_snapshot_overview_text(repo, batch_id, batch_no)
             await _edit_ms_batch_tracker_message(query, text, _build_ms_batch_overview_inline_keyboard(batch_id))
+            return True
+        if action == "vd":
+            await _send_ms_batch_first_stage_detail_messages(query, context, batch_id)
             return True
         if action == "sl":
             mode = "d" if arg1 not in ("d", "t") else arg1
