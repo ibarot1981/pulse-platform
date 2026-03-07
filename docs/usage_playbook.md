@@ -370,34 +370,127 @@ Existing tables changed for this requirement:
 3. Add one smoke-test scenario per release (create -> approve -> status change -> reminder).
 4. Review this file at every PR merge that touches roles, notifications, or reminders.
 
-## K) TEST Simulator Quick Commands
+## K) TEST Mode + Preview Utilities
 
-Use these for runtime simulation + preview without Telegram:
+### K1) Required Environment Variables
 
-1. Start simulator runtime:
+Set at runtime:
+
+- `PULSE_RUNTIME_MODE=TEST`
+- `PULSE_TEST_DOC_ID=<test-grist-doc-id>`
+- `PULSE_TEST_API_KEY=<api-key-for-test-doc>`
+- `PULSE_DOC_ID=<live-pulse-doc-id>`
+- `PULSE_API_KEY=<live-pulse-api-key>`
+- `PULSE_GRIST_SERVER=<grist-server-url>`
+
+Optional:
+
+- `PULSE_TEST_SESSION_ID=sim-e2e-001` (default)
+- `PULSE_TEST_SUPERVISOR_USER_ID=<telegram_id>` (optional, auto-resolved if available)
+- `PULSE_TEST_MANAGER_USER_ID=<telegram_id>` (optional, auto-resolved if available)
+- `PULSE_TEST_SAMPLE_ACTOR_USER_ID=<telegram_id>` (for optional sample inbox seed)
+- `PULSE_TEST_PREVIEW_PATH=artifacts/test_preview/outbox_preview.html`
+
+### K2) One-time TEST document schema setup
+
 ```powershell
 $env:PULSE_RUNTIME_MODE="TEST"
-$env:PULSE_TEST_DOC_ID="tSFZW3ybtD46ug2q76iMML"
-python -m pulse.main
+$env:PYTHONPATH="."
+python scripts/grist/setup_test_runtime_doc.py
 ```
 
-2. Push test inbox action from CLI:
+What it creates/ensures in `PULSE_TEST_DOC_ID`:
+
+- `Test_Inbox`
+- `Test_Outbox`
+- `Test_UserContext`
+- `Test_Attachments`
+- `Test_RunLog`
+
+### K3) Run full supervisor -> manager approval flow in one command
+
+Recommended for quick regression checks:
+
 ```powershell
-python scripts/grist/push_test_inbox.py --session sim-e2e-001 --actor <telegram_id> --text "/start"
-python scripts/grist/push_test_inbox.py --session sim-e2e-001 --actor <telegram_id> --callback "prodappr:approve:<batch_id>"
+$env:PYTHONPATH='.'
+.\venv\Scripts\python.exe scripts/grist/run_e2e_batch_approval.py --refresh-session --render
 ```
 
-Fast local path (no poll wait, with preview refresh):
+Override actors explicitly if auto-detect fails:
+
 ```powershell
-python scripts/grist/push_test_inbox.py --session sim-e2e-001 --actor <telegram_id> --text "/start" --process-now --render
+.\venv\Scripts\python.exe scripts/grist/run_e2e_batch_approval.py --supervisor 900000003 --manager 900000004 --session sim-e2e-001 --render
 ```
 
-3. Render HTML preview (one command):
+This script performs:
+
+1. Supervisor path creation (`/start` -> batch flow -> batch creation).
+2. Detects the new `ProductBatchMaster` row id automatically.
+3. Manager approval callback flow (`prodappr:open` then `prodappr:approve`).
+4. Optional preview render.
+
+### K4) Manual TEST actions (legacy style)
+
+You can still push individual rows directly.
+
+```powershell
+python scripts/grist/push_test_inbox.py --session sim-e2e-001 --actor 900000003 --text "/start" --process-now --render
+python scripts/grist/push_test_inbox.py --session sim-e2e-001 --actor 900000003 --callback "prodappr:approve:123" --process-now --render
+```
+
+### K5) Preview + outbox filtering
+
 ```powershell
 .\scripts\grist\render_preview.cmd
 ```
 
-Preview output:
+Open:
 
 - `artifacts/test_preview/outbox_preview.html`
 
+Preview updates included:
+
+- Toolbar user filter (All users / User ID).
+- Message cards show source and parse-mode metadata.
+- Button tooltip shows callback payload (hover to inspect).
+
+### K6) Test Inbox rows you can inject
+
+- Approve a batch:
+
+```json
+{
+  "session_id": "sim-e2e-001",
+  "actor_user_id": "900000004",
+  "actor_role": "Production_Manager",
+  "input_type": "callback",
+  "payload": "prodappr:approve:123",
+  "processed": false
+}
+```
+
+- Open a supervisor stage detail flow (replace batch/row context):
+
+```json
+{
+  "session_id": "sim-e2e-001",
+  "actor_user_id": "900000003",
+  "actor_role": "Production_Supervisor",
+  "input_type": "callback",
+  "payload": "msbatch:vd:123",
+  "processed": false
+}
+```
+
+- Schedule batch action:
+
+```json
+{
+  "session_id": "sim-e2e-001",
+  "actor_user_id": "900000003",
+  "actor_role": "Production_Supervisor",
+  "input_type": "callback",
+  "payload": "prodsv:schedule:123",
+  "processed": false
+}
+```
