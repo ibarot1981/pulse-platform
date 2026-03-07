@@ -10,6 +10,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PUSH_SCRIPT_PATH = REPO_ROOT / "scripts" / "grist" / "push_test_inbox.py"
 RENDER_SCRIPT_PATH = REPO_ROOT / "scripts" / "grist" / "render_test_outbox_preview.py"
+BATCH_CREATED_TEXT = "Batch created:"
 
 if __package__ in (None, ""):
     repo_root = str(REPO_ROOT)
@@ -118,6 +119,82 @@ def _run_push(actor: str, session: str, *, text: str | None = None, callback: st
         raise RuntimeError(f"Failed to push action for actor {actor}: {payload_val}")
 
 
+def _parse_batch_no(text: str) -> str:
+    value = str(text or "")
+    if not value.startswith(BATCH_CREATED_TEXT):
+        return ""
+    after_prefix = value[len(BATCH_CREATED_TEXT):].strip()
+    if not after_prefix:
+        return ""
+    return after_prefix.split("\n", 1)[0].strip()
+
+
+def _max_batch_no_record_id(client: GristClient, batch_no: str) -> int | None:
+    if not batch_no:
+        return None
+    try:
+        for record in client.get_records("ProductBatchMaster"):
+            if str(record.get("fields", {}).get("batch_no", "")).strip() == batch_no:
+                rec_id = record.get("id")
+                if isinstance(rec_id, int):
+                    return rec_id
+    except Exception as exc:
+        raise RuntimeError(f"Unable to read ProductBatchMaster while resolving batch '{batch_no}': {exc}")
+    return None
+
+
+def _find_batch_id_from_test_outbox(
+    client: GristClient,
+    session: str,
+    actor: str,
+) -> tuple[int | None, str | None]:
+    try:
+        outbox_rows = client.get_records("Test_Outbox")
+    except Exception as exc:
+        raise RuntimeError(f"Unable to read Test_Outbox for batch resolution: {exc}")
+
+    batch_no = None
+    for row in reversed(outbox_rows):
+        fields = row.get("fields", {})
+        if str(fields.get("session_id", "")).strip() != session:
+            continue
+        if str(fields.get("recipient_user_id", "")).strip() != str(actor).strip():
+            continue
+        text = str(fields.get("message_text", ""))
+        if not text.startswith(BATCH_CREATED_TEXT):
+            continue
+        batch_no = _parse_batch_no(text)
+        if batch_no:
+            break
+    if not batch_no:
+        return None, None
+    batch_id = _max_batch_no_record_id(client, batch_no)
+    return batch_id, batch_no
+
+
+def _collect_session_outbox_tail(
+    client: GristClient,
+    session: str,
+    actor: str,
+    limit: int = 8,
+) -> list[str]:
+    try:
+        rows = client.get_records("Test_Outbox")
+    except Exception:
+        return ["<unable to read Test_Outbox>"]
+
+    matches = []
+    for row in rows:
+        fields = row.get("fields", {})
+        if str(fields.get("session_id", "")).strip() != session:
+            continue
+        if str(fields.get("recipient_user_id", "")).strip() != str(actor).strip():
+            continue
+        text = str(fields.get("message_text", ""))
+        matches.append(f"- {text[:180]}")
+    return matches[-limit:]
+
+
 def _run_render_preview() -> None:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(REPO_ROOT)
@@ -172,9 +249,24 @@ def main() -> None:
     _run_push(supervisor_id, session_id, text="Yes")
 
     batch_id = _max_batch_id(client)
+    batch_no = None
+
     if batch_id <= before_batch_id:
-        raise RuntimeError("Batch creation did not produce a new ProductBatchMaster record.")
+        outbox_batch_id, outbox_batch_no = _find_batch_id_from_test_outbox(client, session_id, supervisor_id)
+        batch_id = outbox_batch_id or 0
+        batch_no = outbox_batch_no
+
+    if batch_id <= before_batch_id:
+        tail = _collect_session_outbox_tail(client, session_id, supervisor_id)
+        tail_text = "\n".join(tail) if tail else "- no outbox rows found"
+        raise RuntimeError(
+            "Batch creation did not produce a new ProductBatchMaster record.\n"
+            "Recent outbox for supervisor session:\n"
+            f"{tail_text}"
+        )
     print(f"Detected new batch id: {batch_id}")
+    if batch_no:
+        print(f"Batch number from outbox: {batch_no}")
 
     if not args.skip_open:
         _run_push(manager_id, session_id, callback=f"prodappr:open:{batch_id}")
