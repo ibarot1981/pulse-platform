@@ -1556,6 +1556,92 @@ def _is_approval_actor_subscriber(recipient: dict) -> bool:
     return role_id in _APPROVER_ROLE_IDS or role_name in _APPROVER_ROLE_NAMES
 
 
+def _build_costing_user_id_indexes(repo: ProductionRepo) -> tuple[dict[int, str], dict[str, str]]:
+    by_record_id: dict[int, str] = {}
+    by_user_id: dict[str, str] = {}
+    for user in repo.costing_client.get_records("Users"):
+        rec_id = user.get("id")
+        fields = user.get("fields", {})
+        user_id = str(fields.get("User_ID") or "").strip()
+        if isinstance(rec_id, int):
+            by_record_id[rec_id] = user_id
+        if user_id:
+            by_user_id[user_id] = user_id
+    return by_record_id, by_user_id
+
+
+def _resolve_costing_user_id(value, by_record_id: dict[int, str], by_user_id: dict[str, str]) -> str:
+    normalized = _normalize_ref(value)
+    if isinstance(normalized, int):
+        return str(by_record_id.get(normalized, "")).strip()
+    text = str(normalized or "").strip()
+    if text.isdigit():
+        try:
+            return str(by_record_id.get(int(text), text)).strip()
+        except Exception:
+            return text
+    return by_user_id.get(text, text).strip()
+
+
+def _get_batch_owner_user_ids(repo: ProductionRepo, master_record: dict) -> set[str]:
+    master_fields = master_record.get("fields", {})
+    created_by = master_fields.get("created_by")
+    if not created_by:
+        return set()
+
+    by_record_id, by_user_id = _build_costing_user_id_indexes(repo)
+    owner_user_id = _resolve_costing_user_id(created_by, by_record_id, by_user_id)
+    return {owner_user_id} if owner_user_id else set()
+
+
+def _first_stage_supervisor_roles(repo: ProductionRepo, ms_rows: list[dict]) -> set[str]:
+    first_stage_roles: set[str] = set()
+    first_stage_index: int | None = None
+    for row in ms_rows:
+        fields = row.get("fields", row)
+        stage_name = str(fields.get("current_stage_name") or "").strip()
+        if not stage_name:
+            continue
+        try:
+            stage_index = int(fields.get("current_stage_index") or 0)
+        except (TypeError, ValueError):
+            stage_index = 0
+        process_seq = _normalize_process_seq(fields)
+        role_name = _resolve_supervisor_role_for_stage(repo, process_seq, stage_name)
+        if not role_name:
+            continue
+        if first_stage_index is None or stage_index < first_stage_index:
+            first_stage_index = stage_index
+            first_stage_roles = {role_name}
+        elif stage_index == first_stage_index:
+            first_stage_roles.add(role_name)
+    return first_stage_roles
+
+
+def _batch_approved_recipient_renderer(
+    first_stage_roles: set[str],
+    owner_user_ids: set[str],
+):
+    first_stage_roles = {str(role or "").strip() for role in first_stage_roles}
+    owner_ids = {str(owner_id or "").strip() for owner_id in owner_user_ids}
+
+    def _render(recipient: dict) -> dict:
+        role_name = str(recipient.get("role_name") or "").strip()
+        user_id = str(recipient.get("user_id") or "").strip()
+
+        if user_id and user_id in owner_ids:
+            return {}
+
+        if role_name in first_stage_roles:
+            return {"skip": True}
+
+        if _is_approval_actor_subscriber(recipient):
+            return {}
+        return {"skip": True}
+
+    return _render
+
+
 def _batch_created_recipient_renderer(batch_id: int):
     approval_markup = InlineKeyboardMarkup(
         [[InlineKeyboardButton("Click Here to Approve", callback_data=_approval_callback_data("open", batch_id))]]
@@ -3271,6 +3357,9 @@ async def approve_batches_by_ids(update, context, batch_ids: list[int]) -> list[
             except Exception:
                 pass
             await _notify_ms_first_stage(repo, context, batch_id, updated.get("ms_rows", []), batch_no)
+            first_stage_roles = _first_stage_supervisor_roles(repo, updated.get("ms_rows", []))
+            owner_user_ids = _get_batch_owner_user_ids(repo, master_record)
+            recipient_renderer = _batch_approved_recipient_renderer(first_stage_roles, owner_user_ids)
             await _notify_event(
                 context.bot,
                 "production_batch_approved",
@@ -3279,7 +3368,11 @@ async def approve_batches_by_ids(update, context, batch_ids: list[int]) -> list[
                     f"Start Date: {_format_notification_datetime(fields.get('start_date'))} | "
                     "Status: Schedule Pending"
                 ),
-                context={"batch_id": batch_id},
+                context={
+                    "batch_id": batch_id,
+                    "recipient_roles": ["Production_Manager", "System_Admin"],
+                },
+                recipient_renderer=recipient_renderer,
             )
 
     return approved_batch_numbers
