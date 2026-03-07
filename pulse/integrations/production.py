@@ -497,7 +497,10 @@ def _parse_iso_datetime(value) -> datetime | None:
 def _format_dt_short(value: datetime | None) -> str:
     if not value:
         return "-"
-    return value.date().isoformat()
+    try:
+        return _format_notification_datetime(value).split(" ")[0]
+    except Exception:
+        return value.date().isoformat()
 
 
 def _format_notification_datetime(value) -> str:
@@ -696,7 +699,7 @@ def _build_ms_batch_summary_text(repo: ProductionRepo, batch_id: int, batch_no: 
                 next_stage = stages[stage_index + 1] if stage_index + 1 < len(stages) else ""
                 completed_at = _find_stage_completed_from_history(stage, next_stage, history_rows)
                 if completed_at:
-                    timeline_tokens.append(f"{stage}({completed_at.date().isoformat()})")
+                    timeline_tokens.append(f"{stage}({_format_dt_short(completed_at)})")
                 elif stage == current_stage:
                     timeline_tokens.append(f"{stage}(Current)")
                 else:
@@ -1838,7 +1841,7 @@ def _attach_ms_cutlist_pdf(repo: ProductionRepo, batch_id: int, batch_no: str, s
         return
     with tempfile.TemporaryDirectory() as temp_dir:
         file_path = f"{temp_dir}\\ms_cut_list_{batch_no}.pdf"
-        title = f"MS Cut List - {batch_no} ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})"
+        title = f"MS Cut List - {batch_no} ({_format_notification_datetime(_now_iso())})"
         write_grouped_ms_cutlist_pdf(section_rows, file_path, title=title)
         repo.attach_pdf_to_master(batch_id, file_path, field_name="ms_cutlist_pdf")
 
