@@ -529,7 +529,7 @@ def _parse_iso_datetime(value) -> datetime | None:
     if isinstance(value, (int, float)):
         # Grist DateTime values can be numeric (Unix seconds).
         try:
-            return datetime.utcfromtimestamp(float(value))
+            return datetime.fromtimestamp(float(value), tz=timezone.utc)
         except (TypeError, ValueError, OSError):
             return None
     raw_value = str(value).strip()
@@ -537,7 +537,7 @@ def _parse_iso_datetime(value) -> datetime | None:
         return None
     if raw_value.replace(".", "", 1).isdigit():
         try:
-            return datetime.utcfromtimestamp(float(raw_value))
+            return datetime.fromtimestamp(float(raw_value), tz=timezone.utc)
         except (TypeError, ValueError, OSError):
             return None
     try:
