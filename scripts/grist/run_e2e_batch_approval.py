@@ -7,13 +7,21 @@ import sys
 import time
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+PUSH_SCRIPT_PATH = REPO_ROOT / "scripts" / "grist" / "push_test_inbox.py"
+RENDER_SCRIPT_PATH = REPO_ROOT / "scripts" / "grist" / "render_test_outbox_preview.py"
+
+if __package__ in (None, ""):
+    repo_root = str(REPO_ROOT)
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+
 from dotenv import load_dotenv
 
 from pulse.core.grist_client import GristClient
 from pulse.runtime import test_api_key, test_doc_id
 
-
-load_dotenv()
+load_dotenv(REPO_ROOT / ".env")
 
 
 def _build_client() -> GristClient:
@@ -93,7 +101,7 @@ def _run_push(actor: str, session: str, *, text: str | None = None, callback: st
     payload_val = text if text is not None else callback
     args = [
         sys.executable,
-        str(Path("scripts/grist/push_test_inbox.py")),
+        str(PUSH_SCRIPT_PATH),
         "--session",
         session,
         "--actor",
@@ -103,6 +111,7 @@ def _run_push(actor: str, session: str, *, text: str | None = None, callback: st
         "--process-now",
     ]
     env = os.environ.copy()
+    env["PYTHONPATH"] = str(REPO_ROOT)
     env["PULSE_RUNTIME_MODE"] = "TEST"
     result = subprocess.run(args, check=True, env=env)
     if result.returncode != 0:
@@ -111,8 +120,9 @@ def _run_push(actor: str, session: str, *, text: str | None = None, callback: st
 
 def _run_render_preview() -> None:
     env = os.environ.copy()
+    env["PYTHONPATH"] = str(REPO_ROOT)
     env["PULSE_RUNTIME_MODE"] = "TEST"
-    subprocess.run([sys.executable, "scripts/grist/render_test_outbox_preview.py"], check=True, env=env)
+    subprocess.run([sys.executable, str(RENDER_SCRIPT_PATH)], check=True, env=env)
 
 
 def _resolve_actor_ids(args) -> tuple[str, str]:
