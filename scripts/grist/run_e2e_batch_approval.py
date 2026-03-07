@@ -43,6 +43,31 @@ def _build_pulse_user_client() -> GristClient:
     return GristClient(server, pulse_doc, pulse_key)
 
 
+def _build_batch_lookup_client() -> GristClient:
+    server = str(os.getenv("PULSE_GRIST_SERVER", "")).rstrip("/")
+    if not server:
+        raise ValueError("Set PULSE_GRIST_SERVER before resolving batch identifiers.")
+
+    candidates = [
+        (str(os.getenv("COSTING_DOC_ID", "")).strip(), str(os.getenv("COSTING_API_KEY", "")).strip()),
+        (str(os.getenv("PULSE_DOC_ID", "")).strip(), str(os.getenv("PULSE_API_KEY", "")).strip()),
+        (str(test_doc_id()).strip(), str(test_api_key()).strip()),
+    ]
+
+    for doc_id, api_key in candidates:
+        if not doc_id or not api_key:
+            continue
+        client = GristClient(server, doc_id, api_key)
+        try:
+            tables = [table.get("id") for table in client.list_tables()]
+        except Exception:
+            continue
+        if "ProductBatchMaster" in tables:
+            return client
+
+    raise RuntimeError("Unable to locate ProductBatchMaster in COSTING_DOC_ID/PULSE_DOC_ID/test doc.")
+
+
 def _normalize_ref(value):
     if isinstance(value, list):
         return value[0] if value else None
@@ -147,6 +172,7 @@ def _find_batch_id_from_test_outbox(
     client: GristClient,
     session: str,
     actor: str,
+    batch_lookup_client: GristClient,
 ) -> tuple[int | None, str | None]:
     try:
         outbox_rows = client.get_records("Test_Outbox")
@@ -168,7 +194,7 @@ def _find_batch_id_from_test_outbox(
             break
     if not batch_no:
         return None, None
-    batch_id = _max_batch_no_record_id(client, batch_no)
+    batch_id = _max_batch_no_record_id(batch_lookup_client, batch_no)
     return batch_id, batch_no
 
 
@@ -230,6 +256,7 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
     client = _build_client()
+    batch_client = _build_batch_lookup_client()
     supervisor_id, manager_id = _resolve_actor_ids(args)
 
     session_id = str(args.session).strip()
@@ -238,7 +265,7 @@ def main() -> None:
 
     print(f"Running e2e flow with session={session_id}, supervisor={supervisor_id}, manager={manager_id}")
 
-    before_batch_id = _max_batch_id(client)
+    before_batch_id = _max_batch_id(batch_client)
     _run_push(supervisor_id, session_id, text="/start")
     _run_push(supervisor_id, session_id, text="Manage Production")
     _run_push(supervisor_id, session_id, text="New Production Batch")
@@ -248,11 +275,16 @@ def main() -> None:
     _run_push(supervisor_id, session_id, text="New Complete Batch (M-C-S)")
     _run_push(supervisor_id, session_id, text="Yes")
 
-    batch_id = _max_batch_id(client)
+    batch_id = _max_batch_id(batch_client)
     batch_no = None
 
     if batch_id <= before_batch_id:
-        outbox_batch_id, outbox_batch_no = _find_batch_id_from_test_outbox(client, session_id, supervisor_id)
+        outbox_batch_id, outbox_batch_no = _find_batch_id_from_test_outbox(
+            client,
+            session_id,
+            supervisor_id,
+            batch_client,
+        )
         batch_id = outbox_batch_id or 0
         batch_no = outbox_batch_no
 
