@@ -1460,17 +1460,36 @@ def _ms_batch_callback_data(action: str, batch_id: int, arg1: str = "", arg2: st
 
 def _parse_ms_batch_callback_data(data: str) -> tuple[str, int, str, str] | None:
     parts = str(data or "").split(":")
-    if len(parts) < 3 or parts[0] != _MS_BATCH_CB_PREFIX:
+    if len(parts) < 3:
         return None
-    action = str(parts[1] or "").strip()
+
+    start_index = 0
+    if parts[0] == _MS_BATCH_CB_PREFIX:
+        start_index = 0
+        if len(parts) < 3:
+            return None
+    elif parts[0] == _APPROVAL_CB_PREFIX and len(parts) >= 4 and parts[1] == _MS_BATCH_CB_PREFIX:
+        # Backward-compatible alias used in some test flows/callback simulation.
+        start_index = 1
+        if len(parts) < 4:
+            return None
+    else:
+        return None
+
+    action = str(parts[start_index + 1] or "").strip()
     if action not in {"ov", "sl", "vd", "fd", "ft", "dn", "cf"}:
         return None
     try:
-        batch_id = int(parts[2])
+        batch_id = int(parts[start_index + 2])
     except (TypeError, ValueError):
         return None
-    arg1 = parts[3] if len(parts) >= 4 else ""
-    arg2 = parts[4] if len(parts) >= 5 else ""
+    arg1 = parts[start_index + 3] if len(parts) > start_index + 3 else ""
+    arg2 = parts[start_index + 4] if len(parts) > start_index + 4 else ""
+
+    # Historical test callbacks may use an extra prefix segment; tolerate both.
+    if start_index == 1 and batch_id is None:
+        return None
+
     return action, batch_id, arg1, arg2
 
 
