@@ -8,6 +8,7 @@ import pytest
 from pulse.core.grist_client import GristClient
 from pulse.integrations import production
 from pulse.notifications.dispatcher import dispatch_event
+from pulse.reminders import engine as reminders_engine
 from pulse.runtime import runtime_mode
 from pulse.testing import harness
 
@@ -189,7 +190,7 @@ def test_batch_created_notification_sent_only_to_approver(monkeypatch):
     asyncio.run(
         dispatch_event(
             event_type="production_batch_created",
-            message="Batch created: B-1 | Model: M1 | Qty: 10 | Approval: Pending",
+            message="Batch created: B-1\nModel       : M1\nQty         : 10\nDate Created: 06-03-2026 17:30:00 IST\nApproval    : Pending",
             telegram_bot=_FakeBot(),
             context={"batch_id": batch_id},
             recipient_renderer=production._batch_created_recipient_renderer(batch_id),
@@ -248,3 +249,34 @@ def test_create_batch_submit_sends_single_creator_confirmation(monkeypatch):
     assert notify_mock.await_args.args[1] == "production_batch_created"
     assert reply_mock.await_count == 1
     assert "Status: Pending Approval" in reply_mock.await_args.args[1]
+
+
+def test_production_reminder_formats_start_date(monkeypatch):
+    class _FakeRepo:
+        def get_reminder_rule(self, event_id: str):
+            return {"Enabled": True, "Threshold_Days": 2}
+
+        def list_batches_pending_schedule_reminder(self, threshold_days: int):
+            return [
+                {
+                    "id": 5,
+                    "fields": {
+                        "batch_no": "B-5",
+                        "start_date": "1772814858.972331",
+                    },
+                }
+            ]
+
+    sent: list[str] = []
+
+    async def _fake_dispatch(event_type, message, telegram_bot, context=None, **kwargs):
+        sent.append(str(message))
+
+    monkeypatch.setattr("pulse.reminders.engine.ProductionRepo", lambda: _FakeRepo())
+    monkeypatch.setattr("pulse.reminders.engine.dispatch_event", _fake_dispatch)
+
+    count = asyncio.run(reminders_engine.run_production_batch_reminder_checks(object()))
+    assert count == 1
+    assert len(sent) == 1
+    assert "Start Date:" in sent[0]
+    assert "1772814858.972331" not in sent[0]

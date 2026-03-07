@@ -1683,10 +1683,19 @@ async def _create_batch_from_flow(update, context):
     )
     repo.add_lifecycle_history(master_id, "Batch Created", creator_user_ref, "Batch created and sent for approval")
 
+    created_label_width = 12
+    created_notification_message = (
+        f"Batch created: {batch_no}\n"
+        f"{'Model'.ljust(created_label_width)}: {flow['model_code']}\n"
+        f"{'Qty'.ljust(created_label_width)}: {flow['batch_qty']}\n"
+        f"{'Date Created'.ljust(created_label_width)}: {_format_notification_datetime(created_date)}\n"
+        f"{'Approval'.ljust(created_label_width)}: Pending"
+    )
+
     await _notify_event(
         context.bot,
         "production_batch_created",
-        f"Batch created: {batch_no} | Model: {flow['model_code']} | Qty: {flow['batch_qty']} | Approval: Pending",
+        created_notification_message,
         context={"batch_id": master_id},
         recipient_renderer=_batch_created_recipient_renderer(master_id),
     )
