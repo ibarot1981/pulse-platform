@@ -84,6 +84,13 @@ class MenuStateRoutingTests(unittest.IsolatedAsyncioTestCase):
         with patch("pulse.integrations.production.NOTIFICATION_TIMEZONE", "Asia/Calcutta"):
             self.assertEqual(production._format_notification_datetime(0), "01-01-1970 05:30:00 IST")
 
+    def test_format_notification_datetime_local_naive_string(self):
+        with patch("pulse.integrations.production.NOTIFICATION_TIMEZONE", "Asia/Calcutta"):
+            self.assertEqual(
+                production._format_notification_datetime("2026-03-07 12:16:10"),
+                "07-03-2026 12:16:10 IST",
+            )
+
     def test_batch_created_renderer_skips_non_approver_roles(self):
         renderer = production._batch_created_recipient_renderer(9)
 

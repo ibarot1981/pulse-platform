@@ -474,17 +474,16 @@ def _parse_iso_datetime(value) -> datetime | None:
     raw_value = str(value).strip()
     if not raw_value:
         return None
-    if raw_value.isdigit():
+    if raw_value.replace(".", "", 1).isdigit():
         try:
             return datetime.utcfromtimestamp(float(raw_value))
         except (TypeError, ValueError, OSError):
             return None
     try:
-        return datetime.utcfromtimestamp(float(raw_value))
-    except (TypeError, ValueError, OSError):
-        pass
-    try:
-        return datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None and "T" in raw_value:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
     except ValueError:
         pass
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
@@ -506,7 +505,7 @@ def _format_notification_datetime(value) -> str:
     if not parsed:
         return "-"
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=_resolve_notification_timezone())
     else:
         parsed = parsed.astimezone(timezone.utc)
     target_tz = _resolve_notification_timezone()
