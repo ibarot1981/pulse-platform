@@ -59,7 +59,7 @@ _NO = "No"
 _REJECT = "Reject"
 _TODAY = "Today"
 _TOMORROW = "Tomorrow"
-_MS_VIEW_ACTION_REQUIRED = "My Pending Actions"
+_MS_VIEW_ACTION_REQUIRED = "Pending Handoffs"
 _MS_VIEW_ALL = "View All"
 _MS_VIEW_BY_NEXT_STAGE = "View By Next Stage"
 _MS_VIEW_BY_CREATED_BY = "View Created By"
@@ -95,7 +95,24 @@ _MS_HANDOFF_PENDING_ICON = "🤝"
 
 def _normalize_ref(value):
     if isinstance(value, list):
-        return value[0] if value else None
+        items = list(value)
+        if items and items[0] == "L":
+            items = items[1:]
+        if not items:
+            return None
+        first = items[0]
+        if isinstance(first, dict):
+            first = first.get("id") or first.get("record_id") or first.get("ref")
+        value = first
+    elif isinstance(value, dict):
+        value = value.get("id") or value.get("record_id") or value.get("ref")
+
+    text = str(value or "").strip()
+    if text.isdigit():
+        try:
+            return int(text)
+        except Exception:
+            return value
     return value
 
 
@@ -395,6 +412,27 @@ def _normalize_menu_text(value: str) -> str:
     return " ".join(str(value or "").strip().lower().split())
 
 
+def _normalize_role_name(value: str) -> str:
+    return " ".join(str(value or "").strip().lower().replace("_", " ").replace("-", " ").split())
+
+
+def _role_matches(left: str, right: str) -> bool:
+    lval = _normalize_role_name(left)
+    rval = _normalize_role_name(right)
+    return bool(lval and rval and lval == rval)
+
+
+def _map_lookup(mapping: dict, key) -> str:
+    if not isinstance(mapping, dict):
+        return ""
+    if key in mapping:
+        return str(mapping.get(key) or "")
+    text_key = str(key or "").strip()
+    if text_key and text_key in mapping:
+        return str(mapping.get(text_key) or "")
+    return ""
+
+
 def _get_next_stage_name(stages: list[str], current_index: int) -> str:
     next_index = current_index + 1
     if 0 <= next_index < len(stages):
@@ -421,7 +459,7 @@ def _build_ms_stage_pending_message(
         lines.append(f"\u26A0\uFE0F {title}")
     stage_line_next = next_stage or "-"
     lines.append(
-        f"Current : \U0001F528 {current_stage or '-'} \u27A1\uFE0F To Next {stage_line_next}"
+        f"\U0001F7E2 Current Stage: \U0001F528 {current_stage or '-'} \u27A1\uFE0F To Next {stage_line_next}"
     )
     lines.extend(["", "Use the inline buttons below for actions."])
     return "\n".join(lines)
@@ -570,11 +608,12 @@ def _format_notification_datetime(value) -> str:
     parsed = _parse_iso_datetime(value)
     if not parsed:
         return "-"
+    target_tz = _resolve_notification_timezone()
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        # Naive values from legacy tables are local wall-clock times.
+        parsed = parsed.replace(tzinfo=target_tz)
     else:
         parsed = parsed.astimezone(timezone.utc)
-    target_tz = _resolve_notification_timezone()
     parsed = parsed.astimezone(target_tz)
     try:
         return parsed.strftime(NOTIFICATION_DATETIME_FORMAT)
@@ -917,16 +956,54 @@ def _build_ms_batch_snapshot_overview_text(repo: ProductionRepo, batch_id: int, 
     return "\n".join(lines)
 
 
-def _build_ms_batch_overview_inline_keyboard(batch_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
+def _build_ms_batch_overview_inline_keyboard(repo: ProductionRepo, batch_id: int, user_role_name: str = "") -> InlineKeyboardMarkup:
+    keyboard: list[list[InlineKeyboardButton]] = [
         [
-            [
-                InlineKeyboardButton("View Flow Details", callback_data=_ms_batch_callback_data("sl", batch_id, "d", "0")),
-                InlineKeyboardButton("View Timeline", callback_data=_ms_batch_callback_data("sl", batch_id, "t", "0")),
-            ],
-            [InlineKeyboardButton("Refresh", callback_data=_ms_batch_callback_data("ov", batch_id))],
+            InlineKeyboardButton("View Flow Details", callback_data=_ms_batch_callback_data("sl", batch_id, "d", "0")),
+            InlineKeyboardButton("View Timeline", callback_data=_ms_batch_callback_data("sl", batch_id, "t", "0")),
         ]
-    )
+    ]
+
+    # Show quick flow actions that are currently pending for this supervisor.
+    actionable_rows: list[tuple[int, int, int, str, str]] = []
+    if user_role_name:
+        rows = _ordered_ms_rows_for_batch(repo, batch_id)
+        for idx, row in enumerate(rows, start=1):
+            row_id = row.get("id")
+            if not isinstance(row_id, int):
+                continue
+            fields = row.get("fields", {})
+            action_code = ""
+            if _can_mark_stage_done(repo, fields, user_role_name):
+                action_code = "dn"
+            elif _can_confirm_handoff(repo, fields, user_role_name):
+                action_code = "cf"
+            if not action_code:
+                continue
+            process_label = repo.get_process_display_label(_normalize_process_seq(fields)) or f"Flow {idx}"
+            detail_page = (idx - 1) // 8
+            actionable_rows.append((idx, row_id, detail_page, process_label, action_code))
+            if len(actionable_rows) >= 8:
+                break
+
+    for idx, row_id, detail_page, process_label, action_code in actionable_rows:
+        action_label = "Done" if action_code == "dn" else "Confirm"
+        short_label = process_label[:18]
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    f"{idx}. {short_label}",
+                    callback_data=_ms_batch_callback_data("fd", batch_id, str(row_id), str(detail_page)),
+                ),
+                InlineKeyboardButton(
+                    action_label,
+                    callback_data=_ms_batch_callback_data(action_code, batch_id, str(row_id), str(detail_page)),
+                ),
+            ]
+        )
+
+    keyboard.append([InlineKeyboardButton("Refresh", callback_data=_ms_batch_callback_data("ov", batch_id))])
+    return InlineKeyboardMarkup(keyboard)
 
 
 def _build_ms_batch_flow_selector_text(repo: ProductionRepo, rows: list[dict], mode: str, page: int, page_size: int) -> str:
@@ -950,6 +1027,7 @@ def _build_ms_batch_flow_selector_keyboard(
     mode: str,
     page: int,
     page_size: int,
+    user_role_name: str,
 ) -> InlineKeyboardMarkup:
     page_rows, start, end = _paginate(rows, page, page_size)
     keyboard: list[list[InlineKeyboardButton]] = []
@@ -964,14 +1042,20 @@ def _build_ms_batch_flow_selector_keyboard(
             fields.get("current_stage_name") or f"Flow {row_index}"
         )
         label = f"{row_index}. {process_label}"
-        keyboard.append(
-            [
+        row_buttons = [
+            InlineKeyboardButton(
+                label[:32],
+                callback_data=_ms_batch_callback_data(detail_action, batch_id, str(row_id), str(page)),
+            )
+        ]
+        if _can_mark_stage_done(repo, row.get("fields", {}), user_role_name):
+            row_buttons.append(
                 InlineKeyboardButton(
-                    label[:32],
-                    callback_data=_ms_batch_callback_data(detail_action, batch_id, str(row_id), str(page)),
+                    "✅ Done",
+                    callback_data=_ms_batch_callback_data("dn", batch_id, str(row_id), str(page)),
                 )
-            ]
-        )
+            )
+        keyboard.append(row_buttons)
     nav_row: list[InlineKeyboardButton] = []
     if page > 0:
         nav_row.append(InlineKeyboardButton("Prev", callback_data=_ms_batch_callback_data("sl", batch_id, mode, str(page - 1))))
@@ -1058,12 +1142,16 @@ def _build_ms_batch_flow_action_keyboard(
     mode: str,
     can_mark_done: bool,
     can_confirm: bool,
+    can_schedule: bool,
 ) -> InlineKeyboardMarkup:
     keyboard: list[list[InlineKeyboardButton]] = []
     if can_mark_done:
         keyboard.append([InlineKeyboardButton("Mark Stage Done", callback_data=_ms_batch_callback_data("dn", batch_id, str(row_id), str(page)))])
     if can_confirm:
         keyboard.append([InlineKeyboardButton("Confirm Hand-off", callback_data=_ms_batch_callback_data("cf", batch_id, str(row_id), str(page)))])
+    keyboard.append([InlineKeyboardButton("Add Remarks", callback_data=_ms_batch_callback_data("rm", batch_id, str(row_id), str(page)))])
+    if can_schedule:
+        keyboard.append([InlineKeyboardButton("Schedule Batch", callback_data=_ms_batch_callback_data("sc", batch_id, str(row_id), str(page)))])
     keyboard.append(
         [
             InlineKeyboardButton("Back", callback_data=_ms_batch_callback_data("sl", batch_id, mode, str(page))),
@@ -1073,12 +1161,13 @@ def _build_ms_batch_flow_action_keyboard(
     return InlineKeyboardMarkup(keyboard)
 
 
-async def _show_ms_batch_tracker_overview(update, batch_id: int, batch_no: str) -> None:
+async def _show_ms_batch_tracker_overview(update, context, batch_id: int, batch_no: str) -> None:
     repo = ProductionRepo()
+    role_name = _resolve_user_role_name(repo, context)
     text = _build_ms_batch_snapshot_overview_text(repo, batch_id, batch_no)
     await update.effective_message.reply_text(
         _format_menu_text(text),
-        reply_markup=_build_ms_batch_overview_inline_keyboard(batch_id),
+        reply_markup=_build_ms_batch_overview_inline_keyboard(repo, batch_id, role_name),
     )
 
 
@@ -1110,7 +1199,7 @@ def _can_mark_stage_done(repo: ProductionRepo, row_fields: dict, user_role_name:
     process_seq = _normalize_process_seq(row_fields)
     current_stage = str(row_fields.get("current_stage_name") or "").strip()
     current_role = _resolve_supervisor_role_for_stage(repo, process_seq, current_stage)
-    return user_role_name == current_role
+    return _role_matches(user_role_name, current_role)
 
 
 def _can_confirm_handoff(repo: ProductionRepo, row_fields: dict, user_role_name: str) -> bool:
@@ -1122,24 +1211,27 @@ def _can_confirm_handoff(repo: ProductionRepo, row_fields: dict, user_role_name:
     process_seq = _normalize_process_seq(row_fields)
     next_stage = str(row_fields.get("next_stage_name") or "").strip()
     next_role = _resolve_supervisor_role_for_stage(repo, process_seq, next_stage) if next_stage else ""
-    return user_role_name == next_role
+    return _role_matches(user_role_name, next_role)
 
 
-async def _render_ms_batch_flow_selector(query, repo: ProductionRepo, batch_id: int, mode: str, page: int) -> None:
+async def _render_ms_batch_flow_selector(query, context, repo: ProductionRepo, batch_id: int, mode: str, page: int) -> None:
     rows = _ordered_ms_rows_for_batch(repo, batch_id)
     if not rows:
         await _edit_ms_batch_tracker_message(
             query,
             f"Batch Overview\nBatch No: {_resolve_batch_no(repo, batch_id) or '-'}\nNo MS flows found for this batch.",
-            _build_ms_batch_overview_inline_keyboard(batch_id),
+            _build_ms_batch_overview_inline_keyboard(repo, batch_id, _resolve_user_role_name(repo, context)),
         )
         return
     safe_mode = "d" if mode not in ("d", "t") else mode
     page_size = 8
     max_page = max((len(rows) - 1) // page_size, 0)
     safe_page = max(0, min(page, max_page))
+    user_role_name = _resolve_user_role_name(repo, context)
     text = _build_ms_batch_flow_selector_text(repo, rows, safe_mode, safe_page, page_size)
-    keyboard = _build_ms_batch_flow_selector_keyboard(repo, batch_id, rows, safe_mode, safe_page, page_size)
+    keyboard = _build_ms_batch_flow_selector_keyboard(
+        repo, batch_id, rows, safe_mode, safe_page, page_size, user_role_name
+    )
     await _edit_ms_batch_tracker_message(query, text, keyboard)
 
 
@@ -1147,7 +1239,7 @@ async def _render_ms_batch_flow_detail(query, context, repo: ProductionRepo, bat
     rows = _ordered_ms_rows_for_batch(repo, batch_id)
     row_index = _find_ms_row_index(rows, row_id)
     if row_index < 0:
-        await _render_ms_batch_flow_selector(query, repo, batch_id, "d", page)
+        await _render_ms_batch_flow_selector(query, context, repo, batch_id, "d", page)
         return
     row = rows[row_index]
     text = _build_ms_batch_flow_detail_text(repo, batch_id, row, row_index + 1, len(rows))
@@ -1160,6 +1252,7 @@ async def _render_ms_batch_flow_detail(query, context, repo: ProductionRepo, bat
         "d",
         can_mark_done=_can_mark_stage_done(repo, row_fields, user_role_name),
         can_confirm=_can_confirm_handoff(repo, row_fields, user_role_name),
+        can_schedule=_is_batch_schedulable_for_role(repo, batch_id, user_role_name),
     )
     await _edit_ms_batch_tracker_message(query, text, keyboard)
 
@@ -1168,7 +1261,7 @@ async def _render_ms_batch_flow_timeline(query, context, repo: ProductionRepo, b
     rows = _ordered_ms_rows_for_batch(repo, batch_id)
     row_index = _find_ms_row_index(rows, row_id)
     if row_index < 0:
-        await _render_ms_batch_flow_selector(query, repo, batch_id, "t", page)
+        await _render_ms_batch_flow_selector(query, context, repo, batch_id, "t", page)
         return
     row = rows[row_index]
     text = _build_ms_batch_flow_timeline_text(repo, batch_id, row, row_index + 1, len(rows))
@@ -1181,6 +1274,7 @@ async def _render_ms_batch_flow_timeline(query, context, repo: ProductionRepo, b
         "t",
         can_mark_done=_can_mark_stage_done(repo, row_fields, user_role_name),
         can_confirm=_can_confirm_handoff(repo, row_fields, user_role_name),
+        can_schedule=_is_batch_schedulable_for_role(repo, batch_id, user_role_name),
     )
     await _edit_ms_batch_tracker_message(query, text, keyboard)
 
@@ -1479,7 +1573,7 @@ def _parse_ms_batch_callback_data(data: str) -> tuple[str, int, str, str] | None
         return None
 
     action = str(parts[start_index + 1] or "").strip()
-    if action not in {"ov", "sl", "vd", "fd", "ft", "dn", "cf"}:
+    if action not in {"ov", "sl", "vd", "fd", "ft", "dn", "cf", "rm", "sc"}:
         return None
     try:
         batch_id = int(parts[start_index + 2])
@@ -1991,7 +2085,7 @@ async def _send_ms_batch_first_stage_detail_messages(
         stage_name = str(fields.get("current_stage_name") or "").strip()
         process_seq = _normalize_process_seq(fields)
         row_role = _resolve_supervisor_role_for_stage(repo, process_seq, stage_name)
-        if row_role != user_role_name:
+        if not _role_matches(row_role, user_role_name):
             continue
         row_id = row.get("id")
         if not isinstance(row_id, int):
@@ -2196,14 +2290,14 @@ def _is_batch_schedulable_for_role(repo: ProductionRepo, batch_id: int, role_nam
         row_role = str(fields.get("current_stage_role_name") or "").strip()
         if not row_role:
             row_role = _resolve_supervisor_role_for_stage(repo, fields.get("process_seq"), fields.get("current_stage_name"))
-        if row_role == role_name:
+        if _role_matches(row_role, role_name):
             return True
     return False
 
 
 def _list_schedule_batches_for_user_role(repo: ProductionRepo, role_name: str) -> list[dict]:
     rows = repo.list_supervisor_schedule_pending_batches(0)
-    eligible = [row for row in rows if role_name in row.get("roles", [])]
+    eligible = [row for row in rows if any(_role_matches(role_name, candidate) for candidate in row.get("roles", []))]
     eligible.sort(key=lambda row: (row.get("days_open", 0) * -1, row.get("batch_no", "")))
     return eligible
 
@@ -2219,7 +2313,7 @@ def _rows_for_batch_and_role(repo: ProductionRepo, batch_id: int, role_name: str
         row_role = str(fields.get("current_stage_role_name") or "").strip()
         if not row_role:
             row_role = _resolve_supervisor_role_for_stage(repo, fields.get("process_seq"), stage_name)
-        if row_role != role_name:
+        if not _role_matches(row_role, role_name):
             continue
         rows.append(row)
     return rows
@@ -2263,10 +2357,16 @@ def _list_ms_jobs_for_user_role(repo: ProductionRepo, role_name: str) -> list[di
         # - current supervisor sees it as "awaiting acceptance"
         # - next supervisor sees it to accept/reject
         if current_status == _MS_PENDING_CONFIRMATION:
-            if role_name not in {current_role, next_role, supervisor_role}:
+            if not any(
+                _role_matches(role_name, candidate)
+                for candidate in (current_role, next_role, supervisor_role)
+            ):
                 continue
         else:
-            if role_name != supervisor_role and role_name != current_role:
+            if not (
+                _role_matches(role_name, supervisor_role)
+                or _role_matches(role_name, current_role)
+            ):
                 continue
             if not _is_pending_ms_status(current_status):
                 continue
@@ -2331,12 +2431,35 @@ def _filter_ms_jobs(records: list[dict], mode: str) -> list[dict]:
     return list(records)
 
 
+def _can_view_all_ms_jobs(role_name: str) -> bool:
+    return str(role_name or "").strip() in {"Production_Manager", "System_Admin"}
+
+
+def _rows_for_my_ms_jobs_view(
+    all_records: list[dict],
+    action_records: list[dict],
+    role_name: str,
+    mode: str,
+) -> list[dict]:
+    if mode == _MS_VIEW_ACTION_REQUIRED:
+        return action_records
+    if _can_view_all_ms_jobs(role_name):
+        return all_records
+    return action_records
+
+
 async def _show_my_ms_jobs_filter_menu(update, context) -> None:
     context.user_data["menu_state"] = MY_MS_JOBS_FILTER_STATE
     await _reply(
         update,
         "My MS Jobs\nChoose list view:",
-        [[_MS_VIEW_ACTION_REQUIRED], [_MS_VIEW_ALL], [_MS_VIEW_BY_NEXT_STAGE], [_MS_VIEW_BY_CREATED_BY], [_MS_VIEW_BY_BATCH_NO], [BACK_LABEL]],
+        [
+            [_MS_VIEW_ACTION_REQUIRED],
+            [_MS_VIEW_BY_BATCH_NO],
+            [_MS_VIEW_BY_CREATED_BY],
+            [_MS_VIEW_BY_NEXT_STAGE],
+            [BACK_LABEL],
+        ],
     )
 
 
@@ -2355,7 +2478,7 @@ def _get_my_ms_jobs_creator_options(records: list[dict], creator_by_batch: dict[
         batch_id = _normalize_ref(row.get("fields", {}).get("batch_id"))
         if not isinstance(batch_id, int):
             continue
-        creator_name = str(creator_by_batch.get(batch_id) or "").strip()
+        creator_name = _map_lookup(creator_by_batch, batch_id).strip()
         if creator_name:
             options.add(creator_name)
     return sorted(options)
@@ -2367,7 +2490,7 @@ def _get_my_ms_jobs_batch_options(records: list[dict], batch_no_by_id: dict[int,
         batch_id = _normalize_ref(row.get("fields", {}).get("batch_id"))
         if not isinstance(batch_id, int):
             continue
-        batch_no = str(batch_no_by_id.get(batch_id) or "").strip()
+        batch_no = _map_lookup(batch_no_by_id, batch_id).strip()
         if batch_no:
             options.add(batch_no)
     return sorted(options)
@@ -2457,7 +2580,7 @@ async def _show_my_ms_jobs_page(update, context) -> None:
         fields = row.get("fields", {})
         batch_id = _normalize_ref(fields.get("batch_id"))
         batch_no = batch_no_map.get(batch_id, str(batch_id or ""))
-        batch_by = str(creator_by_batch.get(batch_id) or "")
+        batch_by = _map_lookup(creator_by_batch, batch_id)
         stage_name = str(fields.get("current_stage_name") or "")
         next_stage = str(fields.get("next_stage_name") or "")
         qty = fields.get("total_qty") if fields.get("total_qty") is not None else fields.get("required_qty")
@@ -2468,9 +2591,9 @@ async def _show_my_ms_jobs_page(update, context) -> None:
             process_seq = _normalize_process_seq(fields)
             current_role = _resolve_supervisor_role_for_stage(repo, process_seq, stage_name)
             next_role = _resolve_supervisor_role_for_stage(repo, process_seq, next_stage) if next_stage else ""
-            if viewer_role == next_role:
+            if _role_matches(viewer_role, next_role):
                 status_text = f"{_MS_PENDING_CONFIRMATION} (Action: Accept/Reject)"
-            elif viewer_role == current_role:
+            elif _role_matches(viewer_role, current_role):
                 status_text = f"{_MS_PENDING_CONFIRMATION} (Waiting for {next_stage or 'next stage'})"
 
         if mode == _MS_VIEW_BY_NEXT_STAGE:
@@ -2699,8 +2822,9 @@ def _apply_my_ms_jobs_filter(
     mode_value: str,
     creator_by_batch: dict[int, str],
     batch_no_by_id: dict[int, str],
+    role_name: str,
 ) -> tuple[list[dict], str]:
-    base_records = action_records if mode == _MS_VIEW_ACTION_REQUIRED else records
+    base_records = _rows_for_my_ms_jobs_view(records, action_records, role_name, mode)
     filtered = _filter_ms_jobs(base_records, mode)
     if mode == _MS_VIEW_BY_NEXT_STAGE and mode_value:
         filtered = [
@@ -2708,22 +2832,43 @@ def _apply_my_ms_jobs_filter(
             for row in base_records
             if str(row.get("fields", {}).get("next_stage_name") or "").strip() == mode_value
         ]
+        filtered.sort(
+            key=lambda row: (
+                _map_lookup(batch_no_by_id, _normalize_ref(row.get("fields", {}).get("batch_id")) or 0),
+                str(row.get("fields", {}).get("current_stage_name") or ""),
+                row.get("id", 0),
+            )
+        )
     if mode == _MS_VIEW_BY_CREATED_BY and mode_value:
         filtered = []
         for row in base_records:
             batch_id = _normalize_ref(row.get("fields", {}).get("batch_id"))
             if not isinstance(batch_id, int):
                 continue
-            if str(creator_by_batch.get(batch_id) or "").strip() == mode_value:
+            if _map_lookup(creator_by_batch, batch_id).strip() == mode_value:
                 filtered.append(row)
+        filtered.sort(
+            key=lambda row: (
+                _map_lookup(batch_no_by_id, _normalize_ref(row.get("fields", {}).get("batch_id")) or 0),
+                str(row.get("fields", {}).get("current_stage_name") or ""),
+                row.get("id", 0),
+            )
+        )
     if mode == _MS_VIEW_BY_BATCH_NO and mode_value:
         filtered = []
         for row in base_records:
             batch_id = _normalize_ref(row.get("fields", {}).get("batch_id"))
             if not isinstance(batch_id, int):
                 continue
-            if str(batch_no_by_id.get(batch_id) or "").strip() == mode_value:
+            if _map_lookup(batch_no_by_id, batch_id).strip() == mode_value:
                 filtered.append(row)
+        filtered.sort(
+            key=lambda row: (
+                str(row.get("fields", {}).get("current_stage_name") or ""),
+                str(row.get("fields", {}).get("part_id") or ""),
+                row.get("id", 0),
+            )
+        )
     view_mode = f"{mode}: {mode_value}" if mode_value else mode
     return filtered, view_mode
 
@@ -2747,6 +2892,7 @@ def _refresh_my_ms_jobs_selection(context, repo: ProductionRepo, role_name: str)
         mode_value,
         creator_by_batch,
         batch_no_by_id,
+        role_name,
     )
 
     context.user_data["my_ms_jobs_all_records"] = all_rows
@@ -2820,7 +2966,7 @@ async def _reject_ms_handoff_with_remarks(
     next_stage = str(fields.get("next_stage_name") or "").strip()
     current_role = _resolve_supervisor_role_for_stage(repo, process_seq, current_stage)
     next_role = _resolve_supervisor_role_for_stage(repo, process_seq, next_stage) if next_stage else ""
-    if user_role_name != next_role:
+    if not _role_matches(user_role_name, next_role):
         return False
 
     new_status = f"{current_stage} Pending" if current_stage else "Pending"
@@ -2895,7 +3041,7 @@ async def _execute_ms_job_action(update, context, action_code: str, selected_rec
             await _reply(update, "Batch not found for selected row.")
             return True
         batch_no = str((repo.get_master_by_id(batch_id) or {}).get("fields", {}).get("batch_no") or "")
-        await _show_ms_batch_tracker_overview(update, batch_id, batch_no)
+        await _show_ms_batch_tracker_overview(update, context, batch_id, batch_no)
         return True
 
     if action_code in ("P", "V"):
@@ -2939,14 +3085,14 @@ async def _execute_ms_job_action(update, context, action_code: str, selected_rec
         next_role = _resolve_supervisor_role_for_stage(repo, process_seq, next_stage) if next_stage else ""
         if row_status == _MS_PENDING_CONFIRMATION:
             if action_code == "N":
-                if user_role_name != next_role:
+                if not _role_matches(user_role_name, next_role):
                     await _reply(update, "Only the next-stage supervisor can reject this handover.")
                     return True
                 context.user_data["my_ms_jobs_handoff_reject_remarks"] = {"row_id": row_id, "batch_id": batch_id}
                 context.user_data["menu_state"] = MY_MS_JOBS_HANDOFF_REJECT_REMARKS_STATE
                 await _reply(update, "Enter rejection remarks for this handoff:", [[BACK_LABEL]])
                 return True
-            if user_role_name != next_role:
+            if not _role_matches(user_role_name, next_role):
                 await _reply(update, "Only the next-stage supervisor can confirm this handover.")
                 return True
             try:
@@ -2961,7 +3107,7 @@ async def _execute_ms_job_action(update, context, action_code: str, selected_rec
             await _reply(update, "This row is not waiting for handoff confirmation.")
             return True
 
-        if user_role_name != current_role:
+        if not _role_matches(user_role_name, current_role):
             await _reply(update, "You are not authorized for this stage.")
             return True
         try:
@@ -3472,7 +3618,7 @@ async def handle_production_callback(update, context) -> bool:
         batch_no = _resolve_batch_no(repo, batch_id)
         if action == "ov":
             text = _build_ms_batch_snapshot_overview_text(repo, batch_id, batch_no)
-            await _edit_ms_batch_tracker_message(query, text, _build_ms_batch_overview_inline_keyboard(batch_id))
+            await _edit_ms_batch_tracker_message(query, text, _build_ms_batch_overview_inline_keyboard(repo, batch_id, user_role_name))
             return True
         if action == "vd":
             await _send_ms_batch_first_stage_detail_messages(query, context, batch_id)
@@ -3483,9 +3629,9 @@ async def handle_production_callback(update, context) -> bool:
                 page = int(arg2 or 0)
             except (TypeError, ValueError):
                 page = 0
-            await _render_ms_batch_flow_selector(query, repo, batch_id, mode, page)
+            await _render_ms_batch_flow_selector(query, context, repo, batch_id, mode, page)
             return True
-        if action in ("fd", "ft", "dn", "cf"):
+        if action in ("fd", "ft", "dn", "cf", "rm", "sc"):
             try:
                 row_id = int(arg1)
             except (TypeError, ValueError):
@@ -3522,7 +3668,7 @@ async def handle_production_callback(update, context) -> bool:
                 if status == _MS_PENDING_CONFIRMATION:
                     await query.message.reply_text("This flow is waiting for next-stage hand-off confirmation.")
                     return True
-                if user_role_name != current_role:
+                if not _role_matches(user_role_name, current_role):
                     await query.message.reply_text("Only the current-stage supervisor can mark this stage done.")
                     return True
                 try:
@@ -3530,15 +3676,14 @@ async def handle_production_callback(update, context) -> bool:
                 except Exception:
                     await query.message.reply_text("Could not mark stage done.")
                     return True
-                text = _build_ms_batch_snapshot_overview_text(repo, batch_id, batch_no)
-                await _edit_ms_batch_tracker_message(query, text, _build_ms_batch_overview_inline_keyboard(batch_id))
+                await _render_ms_batch_flow_selector(query, context, repo, batch_id, "d", page)
                 return True
 
             if action == "cf":
                 if status != _MS_PENDING_CONFIRMATION:
                     await query.message.reply_text("This flow is not waiting for hand-off confirmation.")
                     return True
-                if user_role_name != next_role:
+                if not _role_matches(user_role_name, next_role):
                     await query.message.reply_text("Only the next-stage supervisor can confirm this hand-off.")
                     return True
                 try:
@@ -3546,8 +3691,40 @@ async def handle_production_callback(update, context) -> bool:
                 except Exception:
                     await query.message.reply_text("Could not confirm and advance this flow.")
                     return True
-                text = _build_ms_batch_snapshot_overview_text(repo, batch_id, batch_no)
-                await _edit_ms_batch_tracker_message(query, text, _build_ms_batch_overview_inline_keyboard(batch_id))
+                await _render_ms_batch_flow_selector(query, context, repo, batch_id, "d", page)
+                return True
+
+            if action == "rm":
+                context.user_data["my_ms_batch_action"] = {
+                    "batch_id": batch_id,
+                    "batch_no": batch_no,
+                    "source_state": MY_MS_JOBS_BATCH_SELECTION_STATE,
+                }
+                context.user_data["my_ms_jobs_remarks"] = {
+                    "row_id": row_id,
+                    "batch_id": batch_id,
+                    "return_state": MY_MS_BATCH_ACTION_STATE,
+                }
+                context.user_data["menu_state"] = MY_MS_JOBS_REMARKS_STATE
+                await query.message.reply_text("Enter remarks text for selected flow:", reply_markup=ReplyKeyboardMarkup([[BACK_LABEL]], resize_keyboard=True))
+                return True
+
+            if action == "sc":
+                if not _is_batch_schedulable_for_role(repo, batch_id, user_role_name):
+                    await query.message.reply_text("You are not authorized to schedule this batch or it is already scheduled.")
+                    return True
+                context.user_data["my_ms_batch_action"] = {
+                    "batch_id": batch_id,
+                    "batch_no": batch_no,
+                    "source_state": MY_MS_JOBS_BATCH_SELECTION_STATE,
+                }
+                await _prompt_schedule_date(
+                    update,
+                    context,
+                    [batch_id],
+                    return_state=MY_MS_BATCH_ACTION_STATE,
+                    title=f"Schedule Batch {batch_no or ''}",
+                )
                 return True
 
     parsed_supervisor = _parse_supervisor_callback_data(str(query.data))
@@ -3586,7 +3763,7 @@ async def handle_production_callback(update, context) -> bool:
             next_role = _resolve_supervisor_role_for_stage(repo, process_seq, next_stage) if next_stage else ""
 
             if row_status == _MS_PENDING_CONFIRMATION:
-                if user_role_name != next_role:
+                if not _role_matches(user_role_name, next_role):
                     await query.message.reply_text("Only the next-stage supervisor can confirm this handover.")
                     return True
                 try:
@@ -3597,7 +3774,7 @@ async def handle_production_callback(update, context) -> bool:
                 await query.message.reply_text("Stage handover confirmed.")
                 return True
             try:
-                if user_role_name != current_role:
+                if not _role_matches(user_role_name, current_role):
                     await query.message.reply_text("You are not authorized for this stage.")
                     return True
                 await _mark_ms_stage_done_pending_confirmation(repo, context, record_id, updated_by)
@@ -3620,7 +3797,7 @@ async def handle_production_callback(update, context) -> bool:
             if row_status != _MS_PENDING_CONFIRMATION:
                 await query.message.reply_text("This row is not waiting for confirmation.")
                 return True
-            if user_role_name != next_role:
+            if not _role_matches(user_role_name, next_role):
                 await query.message.reply_text("Only the next-stage supervisor can confirm this handover.")
                 return True
             try:
@@ -4051,9 +4228,20 @@ async def handle_production_state_text(update, context, text: str) -> bool:
             context.user_data.pop("my_ms_batch_remarks", None)
             context.user_data["menu_state"] = _target_return_state(context)
             return True
+        # Recovery fallback: if selection context exists and user enters numbers,
+        # route to that selector even when menu_state unexpectedly drifted.
+        if _parse_number_tokens(text):
+            if context.user_data.get("my_ms_jobs_batch_selection"):
+                context.user_data["menu_state"] = MY_MS_JOBS_BATCH_SELECTION_STATE
+                return await handle_production_state_text(update, context, text)
+            if context.user_data.get("my_ms_jobs_next_stage_selection"):
+                context.user_data["menu_state"] = MY_MS_JOBS_NEXT_STAGE_SELECTION_STATE
+                return await handle_production_state_text(update, context, text)
+            if context.user_data.get("my_ms_jobs_created_by_selection"):
+                context.user_data["menu_state"] = MY_MS_JOBS_CREATED_BY_SELECTION_STATE
+                return await handle_production_state_text(update, context, text)
         normalized_filter_map = {
             _normalize_menu_text(_MS_VIEW_ACTION_REQUIRED): _MS_VIEW_ACTION_REQUIRED,
-            _normalize_menu_text(_MS_VIEW_ALL): _MS_VIEW_ALL,
             _normalize_menu_text(_MS_VIEW_BY_NEXT_STAGE): _MS_VIEW_BY_NEXT_STAGE,
             _normalize_menu_text(_MS_VIEW_BY_CREATED_BY): _MS_VIEW_BY_CREATED_BY,
             _normalize_menu_text(_MS_VIEW_BY_BATCH_NO): _MS_VIEW_BY_BATCH_NO,
@@ -4062,9 +4250,14 @@ async def handle_production_state_text(update, context, text: str) -> bool:
         if not selected_filter:
             await _reply(update, "Choose a valid MS jobs view.")
             return True
+        repo = ProductionRepo()
+        role_name = repo.get_role_name_by_user_id(context.user_data.get("user", {}).get("user_id", ""))
         all_records = context.user_data.get("my_ms_jobs_all_records", [])
         action_records = context.user_data.get("my_ms_jobs_action_records", [])
+        if not action_records and all_records and "my_ms_jobs_action_records" not in context.user_data:
+            action_records = all_records
         batch_no_by_id = context.user_data.get("my_ms_jobs_batch_no_by_id")
+        view_records = _rows_for_my_ms_jobs_view(all_records, action_records, role_name, selected_filter)
         if not isinstance(batch_no_by_id, dict):
             batch_ids = {
                 _normalize_ref(row.get("fields", {}).get("batch_id"))
@@ -4074,7 +4267,7 @@ async def handle_production_state_text(update, context, text: str) -> bool:
             batch_no_by_id = _get_batch_no_map(ProductionRepo(), batch_ids)
             context.user_data["my_ms_jobs_batch_no_by_id"] = batch_no_by_id
         if selected_filter == _MS_VIEW_BY_NEXT_STAGE:
-            options = _get_my_ms_jobs_next_stage_options(all_records)
+            options = _get_my_ms_jobs_next_stage_options(view_records)
             if not options:
                 await _reply(update, "No next-stage entries available for your MS jobs.", [[BACK_LABEL]])
                 return True
@@ -4096,7 +4289,7 @@ async def handle_production_state_text(update, context, text: str) -> bool:
                 }
                 creator_by_batch = _get_batch_creator_name_map(ProductionRepo(), batch_ids)
                 context.user_data["my_ms_jobs_creator_by_batch"] = creator_by_batch
-            options = _get_my_ms_jobs_creator_options(all_records, creator_by_batch)
+            options = _get_my_ms_jobs_creator_options(view_records, creator_by_batch)
             if not options:
                 await _reply(update, "No creator entries available for your MS jobs.", [[BACK_LABEL]])
                 return True
@@ -4109,7 +4302,7 @@ async def handle_production_state_text(update, context, text: str) -> bool:
             await _show_my_ms_jobs_created_by_filter_page(update, context)
             return True
         if selected_filter == _MS_VIEW_BY_BATCH_NO:
-            options = _get_my_ms_jobs_batch_options(all_records, batch_no_by_id)
+            options = _get_my_ms_jobs_batch_options(view_records, batch_no_by_id)
             if not options:
                 await _reply(update, "No batch entries available for your MS jobs.", [[BACK_LABEL]])
                 return True
@@ -4117,6 +4310,7 @@ async def handle_production_state_text(update, context, text: str) -> bool:
                 "options": options,
                 "page": 0,
                 "page_size": settings.MSCUTLIST_PAGE_SIZE,
+                "parent_state": MY_MS_JOBS_FILTER_STATE,
             }
             context.user_data["menu_state"] = MY_MS_JOBS_BATCH_SELECTION_STATE
             await _show_my_ms_jobs_batch_filter_page(update, context)
@@ -4128,6 +4322,7 @@ async def handle_production_state_text(update, context, text: str) -> bool:
             "",
             context.user_data.get("my_ms_jobs_creator_by_batch", {}),
             batch_no_by_id if isinstance(batch_no_by_id, dict) else {},
+            role_name,
         )
         if not filtered:
             await _reply(update, "No MS jobs found for selected view.", [[BACK_LABEL]])
@@ -4176,6 +4371,8 @@ async def handle_production_state_text(update, context, text: str) -> bool:
         selected_stage = page_options[option_index]
         all_records = context.user_data.get("my_ms_jobs_all_records", [])
         action_records = context.user_data.get("my_ms_jobs_action_records", [])
+        repo = ProductionRepo()
+        role_name = repo.get_role_name_by_user_id(context.user_data.get("user", {}).get("user_id", ""))
         filtered, view_mode = _apply_my_ms_jobs_filter(
             all_records,
             action_records,
@@ -4183,8 +4380,8 @@ async def handle_production_state_text(update, context, text: str) -> bool:
             selected_stage,
             context.user_data.get("my_ms_jobs_creator_by_batch", {}),
             context.user_data.get("my_ms_jobs_batch_no_by_id", {}),
+            role_name,
         )
-        context.user_data.pop("my_ms_jobs_next_stage_selection", None)
         if not filtered:
             await _reply(update, "No MS jobs found for selected next stage.", [[BACK_LABEL]])
             return True
@@ -4196,8 +4393,18 @@ async def handle_production_state_text(update, context, text: str) -> bool:
             "page_size": settings.MSCUTLIST_PAGE_SIZE,
             "view_mode": view_mode,
         }
-        context.user_data["menu_state"] = MY_MS_JOBS_SELECTION_STATE
-        await _show_my_ms_jobs_page(update, context)
+        batch_options = _get_my_ms_jobs_batch_options(filtered, context.user_data.get("my_ms_jobs_batch_no_by_id", {}))
+        if not batch_options:
+            await _reply(update, "No batch entries available for selected next stage.", [[BACK_LABEL]])
+            return True
+        context.user_data["my_ms_jobs_batch_selection"] = {
+            "options": batch_options,
+            "page": 0,
+            "page_size": settings.MSCUTLIST_PAGE_SIZE,
+            "parent_state": MY_MS_JOBS_NEXT_STAGE_SELECTION_STATE,
+        }
+        context.user_data["menu_state"] = MY_MS_JOBS_BATCH_SELECTION_STATE
+        await _show_my_ms_jobs_batch_filter_page(update, context)
         return True
 
     if state == MY_MS_JOBS_CREATED_BY_SELECTION_STATE:
@@ -4232,6 +4439,8 @@ async def handle_production_state_text(update, context, text: str) -> bool:
         selected_creator = page_options[option_index]
         all_records = context.user_data.get("my_ms_jobs_all_records", [])
         action_records = context.user_data.get("my_ms_jobs_action_records", [])
+        repo = ProductionRepo()
+        role_name = repo.get_role_name_by_user_id(context.user_data.get("user", {}).get("user_id", ""))
         filtered, view_mode = _apply_my_ms_jobs_filter(
             all_records,
             action_records,
@@ -4239,8 +4448,8 @@ async def handle_production_state_text(update, context, text: str) -> bool:
             selected_creator,
             context.user_data.get("my_ms_jobs_creator_by_batch", {}),
             context.user_data.get("my_ms_jobs_batch_no_by_id", {}),
+            role_name,
         )
-        context.user_data.pop("my_ms_jobs_created_by_selection", None)
         if not filtered:
             await _reply(update, "No MS jobs found for selected creator.", [[BACK_LABEL]])
             return True
@@ -4252,8 +4461,18 @@ async def handle_production_state_text(update, context, text: str) -> bool:
             "page_size": settings.MSCUTLIST_PAGE_SIZE,
             "view_mode": view_mode,
         }
-        context.user_data["menu_state"] = MY_MS_JOBS_SELECTION_STATE
-        await _show_my_ms_jobs_page(update, context)
+        batch_options = _get_my_ms_jobs_batch_options(filtered, context.user_data.get("my_ms_jobs_batch_no_by_id", {}))
+        if not batch_options:
+            await _reply(update, "No batch entries available for selected creator.", [[BACK_LABEL]])
+            return True
+        context.user_data["my_ms_jobs_batch_selection"] = {
+            "options": batch_options,
+            "page": 0,
+            "page_size": settings.MSCUTLIST_PAGE_SIZE,
+            "parent_state": MY_MS_JOBS_CREATED_BY_SELECTION_STATE,
+        }
+        context.user_data["menu_state"] = MY_MS_JOBS_BATCH_SELECTION_STATE
+        await _show_my_ms_jobs_batch_filter_page(update, context)
         return True
 
     if state == MY_MS_JOBS_BATCH_SELECTION_STATE:
@@ -4272,7 +4491,16 @@ async def handle_production_state_text(update, context, text: str) -> bool:
             await _show_my_ms_jobs_batch_filter_page(update, context)
             return True
         if text == BACK_LABEL:
+            parent_state = str(selection.get("parent_state") or "")
             context.user_data.pop("my_ms_jobs_batch_selection", None)
+            if parent_state == MY_MS_JOBS_NEXT_STAGE_SELECTION_STATE and context.user_data.get("my_ms_jobs_next_stage_selection"):
+                context.user_data["menu_state"] = MY_MS_JOBS_NEXT_STAGE_SELECTION_STATE
+                await _show_my_ms_jobs_next_stage_filter_page(update, context)
+                return True
+            if parent_state == MY_MS_JOBS_CREATED_BY_SELECTION_STATE and context.user_data.get("my_ms_jobs_created_by_selection"):
+                context.user_data["menu_state"] = MY_MS_JOBS_CREATED_BY_SELECTION_STATE
+                await _show_my_ms_jobs_created_by_filter_page(update, context)
+                return True
             await _show_my_ms_jobs_filter_menu(update, context)
             return True
 
@@ -4292,7 +4520,7 @@ async def handle_production_state_text(update, context, text: str) -> bool:
         if not isinstance(batch_id, int):
             await _reply(update, "Batch not found.")
             return True
-        await _show_ms_batch_tracker_overview(update, batch_id, selected_batch_no)
+        await _show_ms_batch_tracker_overview(update, context, batch_id, selected_batch_no)
         context.user_data["my_ms_batch_action"] = {
             "batch_id": batch_id,
             "batch_no": selected_batch_no,
@@ -4336,7 +4564,7 @@ async def handle_production_state_text(update, context, text: str) -> bool:
         if not isinstance(batch_id, int):
             await _reply(update, "Batch not found.")
             return True
-        await _show_ms_batch_tracker_overview(update, batch_id, batch_no)
+        await _show_ms_batch_tracker_overview(update, context, batch_id, batch_no)
         context.user_data["my_ms_batch_action"] = {
             "batch_id": batch_id,
             "batch_no": batch_no,
@@ -4816,7 +5044,7 @@ async def handle_production_state_text(update, context, text: str) -> bool:
         updated_by = repo.get_costing_user_ref_by_user_id(user.get("user_id", ""))
 
         if text == _MS_BATCH_ACTION_SUMMARY:
-            await _show_ms_batch_tracker_overview(update, batch_id, batch_no)
+            await _show_ms_batch_tracker_overview(update, context, batch_id, batch_no)
             await _show_my_ms_batch_action_menu(update, context, batch_id, batch_no, source_state=source_state)
             return True
 
@@ -4831,6 +5059,7 @@ async def handle_production_state_text(update, context, text: str) -> bool:
                 batch_no,
                 context.user_data.get("my_ms_jobs_creator_by_batch", {}),
                 batch_no_by_id if isinstance(batch_no_by_id, dict) else {},
+                user_role_name,
             )
             context.user_data["my_ms_jobs_filter"] = _MS_VIEW_BY_BATCH_NO
             context.user_data["my_ms_jobs_filter_value"] = batch_no
@@ -4920,11 +5149,7 @@ async def handle_production_state_text(update, context, text: str) -> bool:
             await _reply(update, f"Enter remarks text for batch {batch_no or '-'}:", [[BACK_LABEL]])
             return True
 
-        await _reply(
-            update,
-            "Choose one batch action from menu.",
-            [[_MS_BATCH_ACTION_SUMMARY], [_MS_BATCH_ACTION_DONE], [_MS_BATCH_ACTION_HOLD], [_MS_BATCH_ACTION_REMARKS], [_MS_BATCH_ACTION_VIEW], [_MS_BATCH_ACTION_SCHEDULE], [BACK_LABEL]],
-        )
+        await _show_ms_batch_tracker_overview(update, context, batch_id, batch_no)
         return True
 
     if state == MY_MS_BATCH_REMARKS_STATE:
@@ -4999,7 +5224,15 @@ async def handle_production_state_text(update, context, text: str) -> bool:
 
     if state == MY_MS_JOBS_REMARKS_STATE:
         if text == BACK_LABEL:
+            data = context.user_data.get("my_ms_jobs_remarks", {})
+            return_state = data.get("return_state") or MY_MS_JOBS_SELECTION_STATE
+            batch_id = data.get("batch_id")
             context.user_data.pop("my_ms_jobs_remarks", None)
+            if return_state == MY_MS_BATCH_ACTION_STATE and isinstance(batch_id, int):
+                batch_no = str((ProductionRepo().get_master_by_id(batch_id) or {}).get("fields", {}).get("batch_no") or "")
+                context.user_data["menu_state"] = MY_MS_BATCH_ACTION_STATE
+                await _show_my_ms_batch_action_menu(update, context, batch_id, batch_no, source_state=MY_MS_JOBS_BATCH_SELECTION_STATE)
+                return True
             context.user_data["menu_state"] = MY_MS_JOBS_SELECTION_STATE
             await _show_my_ms_jobs_page(update, context)
             return True
@@ -5010,6 +5243,7 @@ async def handle_production_state_text(update, context, text: str) -> bool:
         data = context.user_data.get("my_ms_jobs_remarks", {})
         row_id = data.get("row_id")
         batch_id = data.get("batch_id")
+        return_state = data.get("return_state") or MY_MS_JOBS_SELECTION_STATE
         if not isinstance(row_id, int):
             await _reply(update, "Invalid row for remarks.")
             return True
@@ -5053,8 +5287,13 @@ async def handle_production_state_text(update, context, text: str) -> bool:
         context.user_data.pop("my_ms_jobs_remarks", None)
         role_name = repo.get_role_name_by_user_id(user.get("user_id", ""))
         _refresh_my_ms_jobs_selection(context, repo, role_name)
-        context.user_data["menu_state"] = MY_MS_JOBS_SELECTION_STATE
         await _reply(update, "Remarks added and notification sent.")
+        if return_state == MY_MS_BATCH_ACTION_STATE and isinstance(batch_id, int):
+            batch_no = str((repo.get_master_by_id(batch_id) or {}).get("fields", {}).get("batch_no") or "")
+            context.user_data["menu_state"] = MY_MS_BATCH_ACTION_STATE
+            await _show_my_ms_batch_action_menu(update, context, batch_id, batch_no, source_state=MY_MS_JOBS_BATCH_SELECTION_STATE)
+            return True
+        context.user_data["menu_state"] = MY_MS_JOBS_SELECTION_STATE
         await _show_my_ms_jobs_page(update, context)
         return True
 
@@ -5115,6 +5354,14 @@ async def handle_production_state_text(update, context, text: str) -> bool:
             if return_state == MY_MS_SCHEDULE_SELECTION_STATE:
                 await _show_my_ms_schedule_page(update, context)
                 return True
+            if return_state == MY_MS_BATCH_ACTION_STATE:
+                batch_ctx = context.user_data.get("my_ms_batch_action", {})
+                batch_id = batch_ctx.get("batch_id")
+                batch_no = str(batch_ctx.get("batch_no") or "")
+                source_state = str(batch_ctx.get("source_state") or MY_MS_JOBS_BATCH_SELECTION_STATE)
+                if isinstance(batch_id, int):
+                    await _show_my_ms_batch_action_menu(update, context, batch_id, batch_no, source_state=source_state)
+                    return True
             return True
 
         scheduled_date_iso = _parse_schedule_date_text(text)
@@ -5167,6 +5414,15 @@ async def handle_production_state_text(update, context, text: str) -> bool:
             context.user_data["menu_state"] = MY_MS_JOBS_SELECTION_STATE
             await _show_my_ms_jobs_page(update, context)
             return True
+        if return_state == MY_MS_BATCH_ACTION_STATE:
+            batch_ctx = context.user_data.get("my_ms_batch_action", {})
+            batch_id = batch_ctx.get("batch_id")
+            batch_no = str(batch_ctx.get("batch_no") or "")
+            source_state = str(batch_ctx.get("source_state") or MY_MS_JOBS_BATCH_SELECTION_STATE)
+            if isinstance(batch_id, int):
+                context.user_data["menu_state"] = MY_MS_BATCH_ACTION_STATE
+                await _show_my_ms_batch_action_menu(update, context, batch_id, batch_no, source_state=source_state)
+                return True
 
         context.user_data["menu_state"] = return_state
         return True
