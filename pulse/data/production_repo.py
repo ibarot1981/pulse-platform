@@ -612,10 +612,15 @@ class ProductionRepo:
         users = self.get_users()
         roles = self.get_roles()
         role_name_by_id = {r.get("id"): r.get("fields", {}).get("Role_Name") for r in roles}
+        target = str(user_id or "").strip()
+        if not target:
+            return ""
 
         for user in users:
             fields = user.get("fields", {})
-            if fields.get("User_ID") != user_id:
+            pulse_user_id = str(fields.get("User_ID") or "").strip()
+            telegram_id = str(fields.get("Telegram_ID") or "").strip()
+            if target not in {pulse_user_id, telegram_id}:
                 continue
             role_ref = self._normalize_ref(fields.get("Role"))
             if not role_ref:

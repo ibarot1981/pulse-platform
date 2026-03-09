@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from pulse.data.production_repo import ProductionRepo
 from pulse.notifications.dispatcher import dispatch_event
-from pulse.integrations.production import build_schedule_inline_keyboard, build_stage_inline_keyboard
+from pulse.integrations.production import (
+    _format_notification_datetime,
+    build_schedule_inline_keyboard,
+    build_stage_inline_keyboard,
+)
 
 PRODUCTION_NOT_SCHEDULED_RULE = "production_batch_not_scheduled_reminder"
 SUPERVISOR_BATCH_SCHEDULE_RULE = "supervisor_batch_schedule_reminder"
@@ -45,7 +49,7 @@ async def run_production_batch_reminder_checks(telegram_bot) -> int:
     for record in pending_batches:
         fields = record.get("fields", {})
         batch_no = fields.get("batch_no", "")
-        start_date = fields.get("start_date", "")
+        start_date = _format_notification_datetime(fields.get("start_date"))
         await dispatch_event(
             PRODUCTION_NOT_SCHEDULED_RULE,
             f"Reminder: Batch {batch_no} is still not scheduled. Start Date: {start_date}",
