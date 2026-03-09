@@ -114,9 +114,12 @@ def _buttons_html(buttons_json: str) -> str:
                 action_label = "callback_data"
                 action_value = "No callback_data (reply keyboard button)"
 
+            action_label = html.escape(action_label, quote=True)
+            action_value_attr = html.escape(action_value, quote=True)
             tooltip = html.escape(f"{action_label}: {action_value}")
             parts.append(
-                f'<span class="btn-wrap"><span class="btn" title="{tooltip}">{label}</span>'
+                f'<span class="btn-wrap">'
+                f'<span class="btn" data-action-value="{action_value_attr}" data-action-type="{action_label}" title="{tooltip}">{label}</span>'
                 f'<span class="btn-tip">{tooltip}</span></span>'
             )
         parts.append("</div>")
@@ -250,6 +253,51 @@ def render_html(rows: list[dict]) -> str:
       const filter = document.getElementById("userFilter");
       const rowsInfo = document.getElementById("rowsInfo");
       const rows = Array.from(document.querySelectorAll(".msg"));
+      const copyStateByButton = new Map();
+
+      function copyToClipboard(text) {{
+        return navigator.clipboard?.writeText(text)
+          .then(() => true)
+          .catch(() => {{
+            const temp = document.createElement("textarea");
+            temp.value = text;
+            temp.setAttribute("readonly", "");
+            temp.style.position = "absolute";
+            temp.style.left = "-9999px";
+            document.body.appendChild(temp);
+            temp.select();
+            document.execCommand("copy");
+            temp.remove();
+            return true;
+          }})
+          .catch(() => false);
+      }}
+
+      async function handleButtonCopy(event) {{
+        const target = event.currentTarget;
+        const rawType = target.dataset.actionType || "";
+        const rawValue = target.dataset.actionValue || "";
+        if (!rawValue || rawType !== "callback_data") {{
+          return;
+        }}
+        const copied = await copyToClipboard(rawValue);
+        if (!copied) {{
+          return;
+        }}
+        const tooltip = target.parentElement.querySelector(".btn-tip");
+        if (!tooltip) {{
+          return;
+        }}
+        const original = tooltip.textContent || "";
+        tooltip.textContent = "copied: " + rawValue;
+        clearTimeout(copyStateByButton.get(target));
+        copyStateByButton.set(
+          target,
+          setTimeout(() => {{
+            tooltip.textContent = original;
+          }}, 1000)
+        );
+      }}
 
       function applyFilter() {{
         const selected = filter.value;
@@ -264,6 +312,9 @@ def render_html(rows: list[dict]) -> str:
       }}
 
       filter.addEventListener("change", applyFilter);
+      document.querySelectorAll(".btn").forEach(btn => {{
+        btn.addEventListener("click", handleButtonCopy);
+      }});
       applyFilter();
     }})();
   </script>
