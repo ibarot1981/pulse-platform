@@ -411,17 +411,19 @@ def _build_ms_stage_pending_message(
     qty: str,
     title: str = "New Batch Approved !!!",
 ) -> str:
+    title = str(title or "").strip()
     lines = [
-        f"\U0001F7E2 {title}",
         f"\U0001F4E6 Batch No: {batch_no}",
         f"\U0001F464 Batch By: {batch_by or '-'}",
         f"\U0001F9E9 Product Part: {part_name}",
-        f"\U0001F504 Current Stage: {current_stage or '-'}",
-        f"\u23ED\uFE0F Next Stage: {next_stage or '-'}",
-        f"\U0001F4CF Qty: {qty}",
-        "",
-        "Use the inline buttons below for actions.",
     ]
+    if title and title != "New Batch Approved !!!":
+        lines.append(f"\u26A0\uFE0F {title}")
+    stage_line_next = next_stage or "-"
+    lines.append(
+        f"Current : \U0001F528 {current_stage or '-'} \u27A1\uFE0F To Next {stage_line_next}"
+    )
+    lines.extend(["", "Use the inline buttons below for actions."])
     return "\n".join(lines)
 
 
