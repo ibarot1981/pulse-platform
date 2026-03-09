@@ -16,12 +16,14 @@ Add env-driven mode switch:
 PULSE_RUNTIME_MODE=LIVE|TEST (default LIVE)
 PULSE_TEST_DOC_ID for test Grist doc
 Any other required test env vars
+
 Build channel abstraction:
 Create a notifier/input adapter interface used by production flows.
 LIVE adapter uses existing Telegram behavior unchanged.
 TEST adapter uses Grist test tables for both inbound actions and outbound notifications.
 Create Grist test document support:
 Add script(s) under scripts/grist/ to create/ensure test tables in a separate Grist doc (not production Pulse/Costing docs).
+
 Include at least:
 Test_Inbox (simulated user actions)
 Test_Outbox (messages/notifications produced by bot)
@@ -29,18 +31,22 @@ Test_UserContext (per actor/session context snapshot/state)
 Test_Attachments (metadata for docs/PDF sends if needed)
 Test_RunLog (processing log/errors)
 Add idempotent schema creation/update behavior.
+
 Simulated input processing:
 Poll Test_Inbox rows with fields like:
 session_id, actor_user_id, input_type (text/callback), payload, processed, error
 Route these rows through the same handlers used by Telegram (fallback_text, callback router, etc.) so behavior matches live mode.
 Mark rows processed and log failures.
+
 Simulated output:
 All messages/notifications/doc sends in TEST mode must be written to Test_Outbox (and Test_Attachments where relevant), including:
 recipient user/role, event type, message text, button/callback payload JSON, timestamps.
 Preserve callback_data so tester can “click” by inserting callback rows into Test_Inbox.
+
 Multi-actor/session support:
 Maintain isolated per-user/session context in TEST mode so many supervisors can be simulated concurrently.
 Ensure role-based notification fanout is visible in Test_Outbox.
+
 Safety constraints:
 In TEST mode, no Telegram API sends/polling should occur.
 Ensure production docs are not mutated by test harness unless explicitly configured.

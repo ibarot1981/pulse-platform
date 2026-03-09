@@ -438,7 +438,24 @@ python scripts/grist/push_test_inbox.py --session sim-e2e-001 --actor 900000003 
 python scripts/grist/push_test_inbox.py --session sim-e2e-001 --actor 900000003 --callback "prodappr:approve:123" --process-now --render
 ```
 
-### K5) Preview + outbox filtering
+### K5) Quick My MS Jobs runner (recommended)
+
+Use this to simulate:
+
+- `/start -> Manage Production -> My MS Jobs`
+- Optional immediate view selection (for example `View By Batch No`)
+- Optional render refresh
+
+Examples:
+
+```powershell
+.\venv\Scripts\python.exe scripts/grist/run_my_ms_jobs_view.py --actor 8492411029 --refresh-session --render
+.\venv\Scripts\python.exe scripts/grist/run_my_ms_jobs_view.py --actor 8492411029 --refresh-session --view "View By Batch No" --render
+.\venv\Scripts\python.exe scripts/grist/run_my_ms_jobs_view.py --actor 8492411029 --refresh-session --view "View Created By" --render
+.\venv\Scripts\python.exe scripts/grist/run_my_ms_jobs_view.py --actor 8492411029 --refresh-session --view "View By Next Stage" --render
+```
+
+### K6) Preview + outbox filtering
 
 ```powershell
 .\scripts\grist\render_preview.cmd
@@ -454,7 +471,7 @@ Preview updates included:
 - Message cards show source and parse-mode metadata.
 - Button tooltip shows callback payload (hover to inspect).
 
-### K6) Test Inbox rows you can inject
+### K7) Test Inbox rows you can inject
 
 - Approve a batch:
 
