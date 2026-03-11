@@ -153,6 +153,7 @@ def _clear_flow(context):
     context.user_data.pop("my_ms_jobs_filter", None)
     context.user_data.pop("my_ms_jobs_filter_value", None)
     context.user_data.pop("my_ms_jobs_creator_by_batch", None)
+    context.user_data.pop("my_ms_jobs_creator_user_id_by_batch", None)
     context.user_data.pop("my_ms_jobs_batch_no_by_id", None)
     context.user_data.pop("my_ms_jobs_action_records", None)
     context.user_data.pop("my_ms_jobs_remarks", None)
@@ -839,6 +840,29 @@ def _ordered_ms_rows_for_batch(repo: ProductionRepo, batch_id: int) -> list[dict
     return rows
 
 
+def _filter_ms_rows_for_batch_visibility(
+    repo: ProductionRepo,
+    rows: list[dict],
+    batch_id: int,
+    user_role_name: str,
+    viewer_user_id: str,
+) -> list[dict]:
+    if _can_view_all_ms_jobs(user_role_name):
+        return list(rows)
+
+    normalized_viewer = str(viewer_user_id or "").strip()
+    if normalized_viewer:
+        creator_user_id = _map_lookup(_get_batch_creator_user_id_map(repo, {batch_id}), batch_id).strip()
+        if creator_user_id and creator_user_id == normalized_viewer:
+            return list(rows)
+
+    return [
+        row
+        for row in rows
+        if _is_ms_row_visible_to_role(repo, row.get("fields", {}), user_role_name)
+    ]
+
+
 def _resolve_stage_index(fields: dict, stages: list[str]) -> int:
     if not stages:
         return 0
@@ -897,8 +921,20 @@ def _infer_batch_expected_completion(master_fields: dict, rows: list[dict]) -> d
     return _parse_iso_datetime(master_fields.get("scheduled_date"))
 
 
-def _build_ms_batch_snapshot_overview_text(repo: ProductionRepo, batch_id: int, batch_no: str) -> str:
-    rows = _ordered_ms_rows_for_batch(repo, batch_id)
+def _build_ms_batch_snapshot_overview_text(
+    repo: ProductionRepo,
+    batch_id: int,
+    batch_no: str,
+    user_role_name: str = "",
+    viewer_user_id: str = "",
+) -> str:
+    rows = _filter_ms_rows_for_batch_visibility(
+        repo,
+        _ordered_ms_rows_for_batch(repo, batch_id),
+        batch_id,
+        user_role_name,
+        viewer_user_id,
+    )
     if not rows:
         return f"Batch Overview\nBatch No: {batch_no or '-'}\nNo MS flows found for this batch."
 
@@ -956,7 +992,12 @@ def _build_ms_batch_snapshot_overview_text(repo: ProductionRepo, batch_id: int, 
     return "\n".join(lines)
 
 
-def _build_ms_batch_overview_inline_keyboard(repo: ProductionRepo, batch_id: int, user_role_name: str = "") -> InlineKeyboardMarkup:
+def _build_ms_batch_overview_inline_keyboard(
+    repo: ProductionRepo,
+    batch_id: int,
+    user_role_name: str = "",
+    viewer_user_id: str = "",
+) -> InlineKeyboardMarkup:
     keyboard: list[list[InlineKeyboardButton]] = [
         [
             InlineKeyboardButton("View Flow Details", callback_data=_ms_batch_callback_data("sl", batch_id, "d", "0")),
@@ -967,7 +1008,13 @@ def _build_ms_batch_overview_inline_keyboard(repo: ProductionRepo, batch_id: int
     # Show quick flow actions that are currently pending for this supervisor.
     actionable_rows: list[tuple[int, int, int, str, str]] = []
     if user_role_name:
-        rows = _ordered_ms_rows_for_batch(repo, batch_id)
+        rows = _filter_ms_rows_for_batch_visibility(
+            repo,
+            _ordered_ms_rows_for_batch(repo, batch_id),
+            batch_id,
+            user_role_name,
+            viewer_user_id,
+        )
         for idx, row in enumerate(rows, start=1):
             row_id = row.get("id")
             if not isinstance(row_id, int):
@@ -1164,10 +1211,12 @@ def _build_ms_batch_flow_action_keyboard(
 async def _show_ms_batch_tracker_overview(update, context, batch_id: int, batch_no: str) -> None:
     repo = ProductionRepo()
     role_name = _resolve_user_role_name(repo, context)
-    text = _build_ms_batch_snapshot_overview_text(repo, batch_id, batch_no)
+    user = context.user_data.get("user", {})
+    viewer_user_id = str(user.get("user_id") or "").strip()
+    text = _build_ms_batch_snapshot_overview_text(repo, batch_id, batch_no, role_name, viewer_user_id)
     await update.effective_message.reply_text(
         _format_menu_text(text),
-        reply_markup=_build_ms_batch_overview_inline_keyboard(repo, batch_id, role_name),
+        reply_markup=_build_ms_batch_overview_inline_keyboard(repo, batch_id, role_name, viewer_user_id),
     )
 
 
@@ -1215,19 +1264,27 @@ def _can_confirm_handoff(repo: ProductionRepo, row_fields: dict, user_role_name:
 
 
 async def _render_ms_batch_flow_selector(query, context, repo: ProductionRepo, batch_id: int, mode: str, page: int) -> None:
-    rows = _ordered_ms_rows_for_batch(repo, batch_id)
+    user = context.user_data.get("user", {})
+    user_role_name = _resolve_user_role_name(repo, context)
+    viewer_user_id = str(user.get("user_id") or "").strip()
+    rows = _filter_ms_rows_for_batch_visibility(
+        repo,
+        _ordered_ms_rows_for_batch(repo, batch_id),
+        batch_id,
+        user_role_name,
+        viewer_user_id,
+    )
     if not rows:
         await _edit_ms_batch_tracker_message(
             query,
             f"Batch Overview\nBatch No: {_resolve_batch_no(repo, batch_id) or '-'}\nNo MS flows found for this batch.",
-            _build_ms_batch_overview_inline_keyboard(repo, batch_id, _resolve_user_role_name(repo, context)),
+            _build_ms_batch_overview_inline_keyboard(repo, batch_id, user_role_name, viewer_user_id),
         )
         return
     safe_mode = "d" if mode not in ("d", "t") else mode
     page_size = 8
     max_page = max((len(rows) - 1) // page_size, 0)
     safe_page = max(0, min(page, max_page))
-    user_role_name = _resolve_user_role_name(repo, context)
     text = _build_ms_batch_flow_selector_text(repo, rows, safe_mode, safe_page, page_size)
     keyboard = _build_ms_batch_flow_selector_keyboard(
         repo, batch_id, rows, safe_mode, safe_page, page_size, user_role_name
@@ -1236,7 +1293,16 @@ async def _render_ms_batch_flow_selector(query, context, repo: ProductionRepo, b
 
 
 async def _render_ms_batch_flow_detail(query, context, repo: ProductionRepo, batch_id: int, row_id: int, page: int) -> None:
-    rows = _ordered_ms_rows_for_batch(repo, batch_id)
+    user = context.user_data.get("user", {})
+    user_role_name = _resolve_user_role_name(repo, context)
+    viewer_user_id = str(user.get("user_id") or "").strip()
+    rows = _filter_ms_rows_for_batch_visibility(
+        repo,
+        _ordered_ms_rows_for_batch(repo, batch_id),
+        batch_id,
+        user_role_name,
+        viewer_user_id,
+    )
     row_index = _find_ms_row_index(rows, row_id)
     if row_index < 0:
         await _render_ms_batch_flow_selector(query, context, repo, batch_id, "d", page)
@@ -1244,7 +1310,6 @@ async def _render_ms_batch_flow_detail(query, context, repo: ProductionRepo, bat
     row = rows[row_index]
     text = _build_ms_batch_flow_detail_text(repo, batch_id, row, row_index + 1, len(rows))
     row_fields = row.get("fields", {})
-    user_role_name = _resolve_user_role_name(repo, context)
     keyboard = _build_ms_batch_flow_action_keyboard(
         batch_id,
         row_id,
@@ -1258,7 +1323,16 @@ async def _render_ms_batch_flow_detail(query, context, repo: ProductionRepo, bat
 
 
 async def _render_ms_batch_flow_timeline(query, context, repo: ProductionRepo, batch_id: int, row_id: int, page: int) -> None:
-    rows = _ordered_ms_rows_for_batch(repo, batch_id)
+    user = context.user_data.get("user", {})
+    user_role_name = _resolve_user_role_name(repo, context)
+    viewer_user_id = str(user.get("user_id") or "").strip()
+    rows = _filter_ms_rows_for_batch_visibility(
+        repo,
+        _ordered_ms_rows_for_batch(repo, batch_id),
+        batch_id,
+        user_role_name,
+        viewer_user_id,
+    )
     row_index = _find_ms_row_index(rows, row_id)
     if row_index < 0:
         await _render_ms_batch_flow_selector(query, context, repo, batch_id, "t", page)
@@ -1266,7 +1340,6 @@ async def _render_ms_batch_flow_timeline(query, context, repo: ProductionRepo, b
     row = rows[row_index]
     text = _build_ms_batch_flow_timeline_text(repo, batch_id, row, row_index + 1, len(rows))
     row_fields = row.get("fields", {})
-    user_role_name = _resolve_user_role_name(repo, context)
     keyboard = _build_ms_batch_flow_action_keyboard(
         batch_id,
         row_id,
@@ -2256,6 +2329,22 @@ def _get_batch_creator_name_map(repo: ProductionRepo, batch_ids: set[int]) -> di
     return creator_map
 
 
+def _get_batch_creator_user_id_map(repo: ProductionRepo, batch_ids: set[int]) -> dict[int, str]:
+    if not batch_ids:
+        return {}
+    if not hasattr(repo, "get_all_master_batches"):
+        return {}
+    by_record_id, by_user_id = _build_costing_user_id_indexes(repo)
+    creator_map: dict[int, str] = {}
+    for master in repo.get_all_master_batches():
+        batch_id = master.get("id")
+        if not isinstance(batch_id, int) or batch_id not in batch_ids:
+            continue
+        created_by = master.get("fields", {}).get("created_by")
+        creator_map[batch_id] = _resolve_costing_user_id(created_by, by_record_id, by_user_id)
+    return creator_map
+
+
 def _is_pending_ms_status(status: str) -> bool:
     value = str(status or "").strip()
     if not value:
@@ -2330,6 +2419,35 @@ async def _mark_batch_stage_done(repo: ProductionRepo, context, batch_id: int, u
     return done_count
 
 
+def _is_ms_row_visible_to_role(repo: ProductionRepo, row_fields: dict, role_name: str) -> bool:
+    if not role_name:
+        return False
+
+    process_seq = _normalize_process_seq(row_fields)
+    stage_name = str(row_fields.get("current_stage_name") or "").strip()
+    current_status = str(row_fields.get("current_status") or row_fields.get("status") or "").strip()
+    current_role = _resolve_supervisor_role_for_stage(repo, process_seq, stage_name)
+    next_stage_name = str(row_fields.get("next_stage_name") or "").strip()
+    next_role = _resolve_supervisor_role_for_stage(repo, process_seq, next_stage_name) if next_stage_name else ""
+    supervisor_role = str(row_fields.get("current_stage_role_name") or "").strip()
+    if not supervisor_role:
+        supervisor_role = current_role
+
+    if current_status == _MS_PENDING_CONFIRMATION:
+        return any(
+            _role_matches(role_name, candidate)
+            for candidate in (current_role, next_role, supervisor_role)
+        )
+
+    return (
+        _is_pending_ms_status(current_status)
+        and (
+            _role_matches(role_name, supervisor_role)
+            or _role_matches(role_name, current_role)
+        )
+    )
+
+
 def _list_ms_jobs_for_user_role(repo: ProductionRepo, role_name: str) -> list[dict]:
     if not role_name:
         return []
@@ -2343,33 +2461,8 @@ def _list_ms_jobs_for_user_role(repo: ProductionRepo, role_name: str) -> list[di
     batch_ids = set()
     for record in repo.costing_client.get_records("ProductBatchMS"):
         fields = record.get("fields", {})
-        process_seq = _normalize_process_seq(fields)
-        stage_name = str(fields.get("current_stage_name") or "").strip()
-        current_status = str(fields.get("current_status") or fields.get("status") or "").strip()
-        current_role = _resolve_supervisor_role_for_stage(repo, process_seq, stage_name)
-        next_stage_name = str(fields.get("next_stage_name") or "").strip()
-        next_role = _resolve_supervisor_role_for_stage(repo, process_seq, next_stage_name) if next_stage_name else ""
-        supervisor_role = str(fields.get("current_stage_role_name") or "").strip()
-        if not supervisor_role:
-            supervisor_role = current_role
-
-        # Dual visibility rule for handoff pending:
-        # - current supervisor sees it as "awaiting acceptance"
-        # - next supervisor sees it to accept/reject
-        if current_status == _MS_PENDING_CONFIRMATION:
-            if not any(
-                _role_matches(role_name, candidate)
-                for candidate in (current_role, next_role, supervisor_role)
-            ):
-                continue
-        else:
-            if not (
-                _role_matches(role_name, supervisor_role)
-                or _role_matches(role_name, current_role)
-            ):
-                continue
-            if not _is_pending_ms_status(current_status):
-                continue
+        if not _is_ms_row_visible_to_role(repo, fields, role_name):
+            continue
         batch_id = _normalize_ref(fields.get("batch_id"))
         if not isinstance(batch_id, int):
             continue
@@ -2440,12 +2533,31 @@ def _rows_for_my_ms_jobs_view(
     action_records: list[dict],
     role_name: str,
     mode: str,
+    creator_user_id_by_batch: dict[int, str],
+    viewer_user_id: str,
 ) -> list[dict]:
     if mode == _MS_VIEW_ACTION_REQUIRED:
         return action_records
     if _can_view_all_ms_jobs(role_name):
         return all_records
-    return action_records
+    normalized_user_id = str(viewer_user_id or "").strip()
+    if not normalized_user_id:
+        return action_records
+
+    selected: list[dict] = list(action_records)
+    selected_ids = {row.get("id") for row in action_records}
+    for row in all_records:
+        row_id = row.get("id")
+        if row_id in selected_ids:
+            continue
+        batch_id = _normalize_ref(row.get("fields", {}).get("batch_id"))
+        if not isinstance(batch_id, int):
+            continue
+        if _map_lookup(creator_user_id_by_batch, batch_id).strip() != normalized_user_id:
+            continue
+        selected.append(row)
+        selected_ids.add(row_id)
+    return selected
 
 
 async def _show_my_ms_jobs_filter_menu(update, context) -> None:
@@ -2757,6 +2869,7 @@ async def start_my_ms_jobs(update, context) -> None:
         if isinstance(_normalize_ref(row.get("fields", {}).get("batch_id")), int)
     }
     context.user_data["my_ms_jobs_creator_by_batch"] = _get_batch_creator_name_map(repo, batch_ids)
+    context.user_data["my_ms_jobs_creator_user_id_by_batch"] = _get_batch_creator_user_id_map(repo, batch_ids)
     context.user_data["my_ms_jobs_batch_no_by_id"] = _get_batch_no_map(repo, batch_ids)
     context.user_data["my_ms_jobs_selection"] = {
         "records": action_records,
@@ -2821,10 +2934,19 @@ def _apply_my_ms_jobs_filter(
     mode: str,
     mode_value: str,
     creator_by_batch: dict[int, str],
+    creator_user_id_by_batch: dict[int, str],
     batch_no_by_id: dict[int, str],
     role_name: str,
+    viewer_user_id: str,
 ) -> tuple[list[dict], str]:
-    base_records = _rows_for_my_ms_jobs_view(records, action_records, role_name, mode)
+    base_records = _rows_for_my_ms_jobs_view(
+        records,
+        action_records,
+        role_name,
+        mode,
+        creator_user_id_by_batch,
+        viewer_user_id,
+    )
     filtered = _filter_ms_jobs(base_records, mode)
     if mode == _MS_VIEW_BY_NEXT_STAGE and mode_value:
         filtered = [
@@ -2884,20 +3006,25 @@ def _refresh_my_ms_jobs_selection(context, repo: ProductionRepo, role_name: str)
         if isinstance(_normalize_ref(row.get("fields", {}).get("batch_id")), int)
     }
     creator_by_batch = _get_batch_creator_name_map(repo, batch_ids)
+    creator_user_id_by_batch = _get_batch_creator_user_id_map(repo, batch_ids)
     batch_no_by_id = _get_batch_no_map(repo, batch_ids)
+    viewer_user_id = str(context.user_data.get("user", {}).get("user_id") or "").strip()
     filtered_rows, view_mode = _apply_my_ms_jobs_filter(
         all_rows,
         action_rows,
         mode,
         mode_value,
         creator_by_batch,
+        creator_user_id_by_batch,
         batch_no_by_id,
         role_name,
+        viewer_user_id,
     )
 
     context.user_data["my_ms_jobs_all_records"] = all_rows
     context.user_data["my_ms_jobs_action_records"] = action_rows
     context.user_data["my_ms_jobs_creator_by_batch"] = creator_by_batch
+    context.user_data["my_ms_jobs_creator_user_id_by_batch"] = creator_user_id_by_batch
     context.user_data["my_ms_jobs_batch_no_by_id"] = batch_no_by_id
     context.user_data["my_ms_jobs_selection"] = {
         "records": filtered_rows,
@@ -3616,9 +3743,14 @@ async def handle_production_callback(update, context) -> bool:
         action, batch_id, arg1, arg2 = parsed_batch_view
         await query.answer()
         batch_no = _resolve_batch_no(repo, batch_id)
+        viewer_user_id = str(user.get("user_id") or "").strip()
         if action == "ov":
-            text = _build_ms_batch_snapshot_overview_text(repo, batch_id, batch_no)
-            await _edit_ms_batch_tracker_message(query, text, _build_ms_batch_overview_inline_keyboard(repo, batch_id, user_role_name))
+            text = _build_ms_batch_snapshot_overview_text(repo, batch_id, batch_no, user_role_name, viewer_user_id)
+            await _edit_ms_batch_tracker_message(
+                query,
+                text,
+                _build_ms_batch_overview_inline_keyboard(repo, batch_id, user_role_name, viewer_user_id),
+            )
             return True
         if action == "vd":
             await _send_ms_batch_first_stage_detail_messages(query, context, batch_id)
@@ -4220,6 +4352,7 @@ async def handle_production_state_text(update, context, text: str) -> bool:
             context.user_data.pop("my_ms_jobs_action_records", None)
             context.user_data.pop("my_ms_jobs_filter_value", None)
             context.user_data.pop("my_ms_jobs_creator_by_batch", None)
+            context.user_data.pop("my_ms_jobs_creator_user_id_by_batch", None)
             context.user_data.pop("my_ms_jobs_batch_no_by_id", None)
             context.user_data.pop("my_ms_jobs_batch_selection", None)
             context.user_data.pop("my_ms_jobs_bulk_action", None)
@@ -4251,13 +4384,30 @@ async def handle_production_state_text(update, context, text: str) -> bool:
             await _reply(update, "Choose a valid MS jobs view.")
             return True
         repo = ProductionRepo()
+        viewer_user_id = str(context.user_data.get("user", {}).get("user_id") or "").strip()
         role_name = repo.get_role_name_by_user_id(context.user_data.get("user", {}).get("user_id", ""))
         all_records = context.user_data.get("my_ms_jobs_all_records", [])
         action_records = context.user_data.get("my_ms_jobs_action_records", [])
         if not action_records and all_records and "my_ms_jobs_action_records" not in context.user_data:
             action_records = all_records
         batch_no_by_id = context.user_data.get("my_ms_jobs_batch_no_by_id")
-        view_records = _rows_for_my_ms_jobs_view(all_records, action_records, role_name, selected_filter)
+        creator_user_id_by_batch = context.user_data.get("my_ms_jobs_creator_user_id_by_batch")
+        if not isinstance(creator_user_id_by_batch, dict):
+            batch_ids = {
+                _normalize_ref(row.get("fields", {}).get("batch_id"))
+                for row in all_records
+                if isinstance(_normalize_ref(row.get("fields", {}).get("batch_id")), int)
+            }
+            creator_user_id_by_batch = _get_batch_creator_user_id_map(repo, batch_ids)
+            context.user_data["my_ms_jobs_creator_user_id_by_batch"] = creator_user_id_by_batch
+        view_records = _rows_for_my_ms_jobs_view(
+            all_records,
+            action_records,
+            role_name,
+            selected_filter,
+            creator_user_id_by_batch,
+            viewer_user_id,
+        )
         if not isinstance(batch_no_by_id, dict):
             batch_ids = {
                 _normalize_ref(row.get("fields", {}).get("batch_id"))
@@ -4321,8 +4471,10 @@ async def handle_production_state_text(update, context, text: str) -> bool:
             selected_filter,
             "",
             context.user_data.get("my_ms_jobs_creator_by_batch", {}),
+            creator_user_id_by_batch if isinstance(creator_user_id_by_batch, dict) else {},
             batch_no_by_id if isinstance(batch_no_by_id, dict) else {},
             role_name,
+            viewer_user_id,
         )
         if not filtered:
             await _reply(update, "No MS jobs found for selected view.", [[BACK_LABEL]])
@@ -4372,6 +4524,7 @@ async def handle_production_state_text(update, context, text: str) -> bool:
         all_records = context.user_data.get("my_ms_jobs_all_records", [])
         action_records = context.user_data.get("my_ms_jobs_action_records", [])
         repo = ProductionRepo()
+        viewer_user_id = str(context.user_data.get("user", {}).get("user_id") or "").strip()
         role_name = repo.get_role_name_by_user_id(context.user_data.get("user", {}).get("user_id", ""))
         filtered, view_mode = _apply_my_ms_jobs_filter(
             all_records,
@@ -4379,8 +4532,10 @@ async def handle_production_state_text(update, context, text: str) -> bool:
             _MS_VIEW_BY_NEXT_STAGE,
             selected_stage,
             context.user_data.get("my_ms_jobs_creator_by_batch", {}),
+            context.user_data.get("my_ms_jobs_creator_user_id_by_batch", {}),
             context.user_data.get("my_ms_jobs_batch_no_by_id", {}),
             role_name,
+            viewer_user_id,
         )
         if not filtered:
             await _reply(update, "No MS jobs found for selected next stage.", [[BACK_LABEL]])
@@ -4440,6 +4595,7 @@ async def handle_production_state_text(update, context, text: str) -> bool:
         all_records = context.user_data.get("my_ms_jobs_all_records", [])
         action_records = context.user_data.get("my_ms_jobs_action_records", [])
         repo = ProductionRepo()
+        viewer_user_id = str(context.user_data.get("user", {}).get("user_id") or "").strip()
         role_name = repo.get_role_name_by_user_id(context.user_data.get("user", {}).get("user_id", ""))
         filtered, view_mode = _apply_my_ms_jobs_filter(
             all_records,
@@ -4447,8 +4603,10 @@ async def handle_production_state_text(update, context, text: str) -> bool:
             _MS_VIEW_BY_CREATED_BY,
             selected_creator,
             context.user_data.get("my_ms_jobs_creator_by_batch", {}),
+            context.user_data.get("my_ms_jobs_creator_user_id_by_batch", {}),
             context.user_data.get("my_ms_jobs_batch_no_by_id", {}),
             role_name,
+            viewer_user_id,
         )
         if not filtered:
             await _reply(update, "No MS jobs found for selected creator.", [[BACK_LABEL]])
@@ -4734,6 +4892,25 @@ async def handle_production_state_text(update, context, text: str) -> bool:
             return True
 
         if len(selected_records) == 1:
+            if context.user_data.get("my_ms_jobs_filter") == _MS_VIEW_BY_BATCH_NO:
+                selected_fields = selected_records[0].get("fields", {})
+                batch_id = _normalize_ref(selected_fields.get("batch_id"))
+                if not isinstance(batch_id, int):
+                    await _reply(update, "Batch not found for selected row.")
+                    return True
+                repo = ProductionRepo()
+                batch_no = _map_lookup(
+                    context.user_data.get("my_ms_jobs_batch_no_by_id", {}),
+                    batch_id,
+                ).strip() or str((repo.get_master_by_id(batch_id) or {}).get("fields", {}).get("batch_no") or "")
+                await _show_ms_batch_tracker_overview(update, context, batch_id, batch_no)
+                context.user_data["my_ms_batch_action"] = {
+                    "batch_id": batch_id,
+                    "batch_no": batch_no,
+                    "source_state": MY_MS_JOBS_SELECTION_STATE,
+                }
+                context.user_data["menu_state"] = MY_MS_BATCH_ACTION_STATE
+                return True
             await _show_ms_job_action_menu(update, context, selected_records[0])
             return True
 
@@ -4750,6 +4927,20 @@ async def handle_production_state_text(update, context, text: str) -> bool:
             context.user_data["menu_state"] = MY_MS_JOBS_SELECTION_STATE
             await _show_my_ms_jobs_page(update, context)
             return True
+
+        # Stale-state recovery:
+        # If user typed a number while the app accidentally stayed in row-action state,
+        # route back to the active batch-selection/list flow instead of forcing row action.
+        if _parse_number_tokens(text):
+            if context.user_data.get("my_ms_jobs_batch_selection"):
+                context.user_data.pop("my_ms_jobs_action", None)
+                context.user_data["menu_state"] = MY_MS_JOBS_BATCH_SELECTION_STATE
+                return await handle_production_state_text(update, context, text)
+            if context.user_data.get("my_ms_jobs_filter") == _MS_VIEW_BY_BATCH_NO and context.user_data.get("my_ms_jobs_selection"):
+                context.user_data.pop("my_ms_jobs_action", None)
+                context.user_data["menu_state"] = MY_MS_JOBS_SELECTION_STATE
+                return await handle_production_state_text(update, context, text)
+
         action_map = {
             _MS_ACTION_DONE: "D",
             _MS_ACTION_CONFIRM_HANDOFF: "C",
@@ -5052,14 +5243,17 @@ async def handle_production_state_text(update, context, text: str) -> bool:
             all_records = context.user_data.get("my_ms_jobs_all_records", [])
             action_records = context.user_data.get("my_ms_jobs_action_records", [])
             batch_no_by_id = context.user_data.get("my_ms_jobs_batch_no_by_id", {})
+            viewer_user_id = str(context.user_data.get("user", {}).get("user_id") or "").strip()
             filtered, view_mode = _apply_my_ms_jobs_filter(
                 all_records,
                 action_records,
                 _MS_VIEW_BY_BATCH_NO,
                 batch_no,
                 context.user_data.get("my_ms_jobs_creator_by_batch", {}),
+                context.user_data.get("my_ms_jobs_creator_user_id_by_batch", {}),
                 batch_no_by_id if isinstance(batch_no_by_id, dict) else {},
                 user_role_name,
+                viewer_user_id,
             )
             context.user_data["my_ms_jobs_filter"] = _MS_VIEW_BY_BATCH_NO
             context.user_data["my_ms_jobs_filter_value"] = batch_no

@@ -187,6 +187,245 @@ class MenuStateRoutingTests(unittest.IsolatedAsyncioTestCase):
         rows = production._list_ms_jobs_for_user_role(_FakeRepo(), "SupervisorA")
         self.assertEqual([row.get("id") for row in rows], [1, 3])
 
+    def test_batch_snapshot_filters_out_unowned_non_action_flow_for_supervisor(self):
+        batch_id = 101
+        batch_no = "MAR26-S1KHFL-BASE-MCS-001"
+
+        class _FakeCostingClient:
+            def get_records(self, table: str):
+                if table == "Users":
+                    return [{"id": 1, "fields": {"User_ID": "creator-1", "Name": "Creator One"}}]
+                return []
+
+        class _FakeRepo:
+            costing_client = _FakeCostingClient()
+
+            def list_ms_rows_for_batch(self, target_batch_id: int):
+                if target_batch_id != batch_id:
+                    return []
+                return [
+                    {
+                        "id": 1,
+                        "fields": {
+                            "batch_id": batch_id,
+                            "process_seq": "PLS-PJ-PROD",
+                            "current_stage_name": "Plasma Cutting",
+                            "current_stage_role_name": "Cutting_Supervisor",
+                            "current_status": "Plasma Cutting Pending",
+                        },
+                    },
+                    {
+                        "id": 2,
+                        "fields": {
+                            "batch_id": batch_id,
+                            "process_seq": "PLS-PROD",
+                            "current_stage_name": "Plasma Cutting",
+                            "current_stage_role_name": "Cutting_Supervisor",
+                            "current_status": "Plasma Cutting Pending",
+                        },
+                    },
+                    {
+                        "id": 3,
+                        "fields": {
+                            "batch_id": batch_id,
+                            "process_seq": "PRS-PJ-PROD",
+                            "current_stage_name": "Press Job",
+                            "current_stage_role_name": "Press_Job_Supervisor",
+                            "current_status": "Press Job Pending",
+                        },
+                    },
+                    {
+                        "id": 4,
+                        "fields": {
+                            "batch_id": batch_id,
+                            "process_seq": "PRS-PROD",
+                            "current_stage_name": "Press Cutting",
+                            "current_stage_role_name": "Cutting_Supervisor",
+                            "current_status": "Press Cutting Pending",
+                        },
+                    },
+                ]
+
+            def get_master_by_id(self, target_batch_id: int):
+                if target_batch_id != batch_id:
+                    return None
+                return {"id": batch_id, "fields": {"created_by": 1}}
+
+            def get_all_master_batches(self):
+                return [{"id": batch_id, "fields": {"created_by": 1, "batch_no": batch_no}}]
+
+            def get_process_stage_names(self, process_seq):
+                stage_map = {
+                    "PLS-PJ-PROD": ["Plasma Cutting", "Press Job", "Production"],
+                    "PLS-PROD": ["Plasma Cutting", "Production"],
+                    "PRS-PJ-PROD": ["Press Cutting", "Press Job", "Production"],
+                    "PRS-PROD": ["Press Cutting", "Production"],
+                }
+                return stage_map.get(process_seq, [])
+
+            def get_process_display_label(self, process_seq):
+                return str(process_seq or "")
+
+            def get_stage_role_for_process_stage(self, process_seq, stage_name: str) -> str:
+                return ""
+
+        text = production._build_ms_batch_snapshot_overview_text(
+            _FakeRepo(),
+            batch_id,
+            batch_no,
+            user_role_name="Cutting_Supervisor",
+            viewer_user_id="other-user",
+        )
+        self.assertIn("Flows: 3", text)
+        self.assertIn("PLS-PJ-PROD", text)
+        self.assertIn("PLS-PROD", text)
+        self.assertIn("PRS-PROD", text)
+        self.assertNotIn("PRS-PJ-PROD", text)
+
+    def test_batch_snapshot_shows_all_flows_for_owner_and_admin(self):
+        batch_id = 101
+        batch_no = "MAR26-S1KHFL-BASE-MCS-001"
+
+        class _FakeCostingClient:
+            def get_records(self, table: str):
+                if table == "Users":
+                    return [{"id": 1, "fields": {"User_ID": "creator-1", "Name": "Creator One"}}]
+                return []
+
+        class _FakeRepo:
+            costing_client = _FakeCostingClient()
+
+            def list_ms_rows_for_batch(self, target_batch_id: int):
+                if target_batch_id != batch_id:
+                    return []
+                return [
+                    {
+                        "id": 1,
+                        "fields": {
+                            "batch_id": batch_id,
+                            "process_seq": "PLS-PJ-PROD",
+                            "current_stage_name": "Plasma Cutting",
+                            "current_stage_role_name": "Cutting_Supervisor",
+                            "current_status": "Plasma Cutting Pending",
+                        },
+                    },
+                    {
+                        "id": 2,
+                        "fields": {
+                            "batch_id": batch_id,
+                            "process_seq": "PLS-PROD",
+                            "current_stage_name": "Plasma Cutting",
+                            "current_stage_role_name": "Cutting_Supervisor",
+                            "current_status": "Plasma Cutting Pending",
+                        },
+                    },
+                    {
+                        "id": 3,
+                        "fields": {
+                            "batch_id": batch_id,
+                            "process_seq": "PRS-PJ-PROD",
+                            "current_stage_name": "Press Job",
+                            "current_stage_role_name": "Press_Job_Supervisor",
+                            "current_status": "Press Job Pending",
+                        },
+                    },
+                    {
+                        "id": 4,
+                        "fields": {
+                            "batch_id": batch_id,
+                            "process_seq": "PRS-PROD",
+                            "current_stage_name": "Press Cutting",
+                            "current_stage_role_name": "Cutting_Supervisor",
+                            "current_status": "Press Cutting Pending",
+                        },
+                    },
+                ]
+
+            def get_master_by_id(self, target_batch_id: int):
+                if target_batch_id != batch_id:
+                    return None
+                return {"id": batch_id, "fields": {"created_by": 1}}
+
+            def get_all_master_batches(self):
+                return [{"id": batch_id, "fields": {"created_by": 1, "batch_no": batch_no}}]
+
+            def get_process_stage_names(self, process_seq):
+                stage_map = {
+                    "PLS-PJ-PROD": ["Plasma Cutting", "Press Job", "Production"],
+                    "PLS-PROD": ["Plasma Cutting", "Production"],
+                    "PRS-PJ-PROD": ["Press Cutting", "Press Job", "Production"],
+                    "PRS-PROD": ["Press Cutting", "Production"],
+                }
+                return stage_map.get(process_seq, [])
+
+            def get_process_display_label(self, process_seq):
+                return str(process_seq or "")
+
+            def get_stage_role_for_process_stage(self, process_seq, stage_name: str) -> str:
+                return ""
+
+        repo = _FakeRepo()
+        owner_text = production._build_ms_batch_snapshot_overview_text(
+            repo,
+            batch_id,
+            batch_no,
+            user_role_name="Cutting_Supervisor",
+            viewer_user_id="creator-1",
+        )
+        admin_text = production._build_ms_batch_snapshot_overview_text(
+            repo,
+            batch_id,
+            batch_no,
+            user_role_name="System_Admin",
+            viewer_user_id="other-user",
+        )
+        manager_text = production._build_ms_batch_snapshot_overview_text(
+            repo,
+            batch_id,
+            batch_no,
+            user_role_name="Production_Manager",
+            viewer_user_id="other-user",
+        )
+        self.assertIn("Flows: 4", owner_text)
+        self.assertIn("PRS-PJ-PROD", owner_text)
+        self.assertIn("Flows: 4", admin_text)
+        self.assertIn("PRS-PJ-PROD", admin_text)
+        self.assertIn("Flows: 4", manager_text)
+        self.assertIn("PRS-PJ-PROD", manager_text)
+
+    def test_apply_ms_jobs_filter_includes_all_owner_rows_for_non_privileged_views(self):
+        all_rows = [
+            {"id": 1, "fields": {"batch_id": 10, "next_stage_name": "Production", "current_stage_name": "Plasma Cutting"}},
+            {"id": 2, "fields": {"batch_id": 10, "next_stage_name": "Production", "current_stage_name": "Press Job"}},
+            {"id": 3, "fields": {"batch_id": 20, "next_stage_name": "Dispatch", "current_stage_name": "Press Cutting"}},
+        ]
+        action_rows = [all_rows[2]]
+
+        filtered_owner, _ = production._apply_my_ms_jobs_filter(
+            all_rows,
+            action_rows,
+            production._MS_VIEW_BY_BATCH_NO,
+            "B-10",
+            {10: "Owner One", 20: "Owner Two"},
+            {10: "creator-1", 20: "creator-2"},
+            {10: "B-10", 20: "B-20"},
+            "Cutting_Supervisor",
+            "creator-1",
+        )
+        filtered_non_owner, _ = production._apply_my_ms_jobs_filter(
+            all_rows,
+            action_rows,
+            production._MS_VIEW_BY_BATCH_NO,
+            "B-10",
+            {10: "Owner One", 20: "Owner Two"},
+            {10: "creator-1", 20: "creator-2"},
+            {10: "B-10", 20: "B-20"},
+            "Cutting_Supervisor",
+            "other-user",
+        )
+        self.assertEqual([row.get("id") for row in filtered_owner], [1, 2])
+        self.assertEqual(filtered_non_owner, [])
+
     async def test_my_ms_jobs_filter_routes_to_next_stage_selector(self):
         context = _DummyContext(
             {
@@ -217,6 +456,72 @@ class MenuStateRoutingTests(unittest.IsolatedAsyncioTestCase):
         next_stage_selection = context.user_data.get("my_ms_jobs_next_stage_selection", {})
         self.assertEqual(next_stage_selection.get("options"), ["WELDING"])
         show_filter_page.assert_awaited_once()
+
+    async def test_batch_view_number_selection_opens_batch_overview_not_row_action_menu(self):
+        context = _DummyContext(
+            {
+                "menu_state": production.MY_MS_JOBS_SELECTION_STATE,
+                "my_ms_jobs_filter": production._MS_VIEW_BY_BATCH_NO,
+                "my_ms_jobs_batch_no_by_id": {10: "B-10"},
+                "my_ms_jobs_selection": {
+                    "records": [{"id": 1, "fields": {"batch_id": 10, "current_stage_name": "Press Job"}}],
+                    "page": 0,
+                    "page_size": 5,
+                },
+            }
+        )
+        update = _DummyUpdate("1")
+
+        class _FakeRepo:
+            def get_master_by_id(self, batch_id: int):
+                return {"id": batch_id, "fields": {"batch_no": "B-10"}}
+
+        with (
+            patch("pulse.integrations.production.ProductionRepo", return_value=_FakeRepo()),
+            patch("pulse.integrations.production._show_ms_batch_tracker_overview", new=AsyncMock()) as show_overview,
+            patch("pulse.integrations.production._show_ms_job_action_menu", new=AsyncMock()) as show_action_menu,
+            patch("pulse.integrations.production._reply", new=AsyncMock()),
+        ):
+            handled = await production.handle_production_state_text(update, context, update.effective_message.text)
+
+        self.assertTrue(handled)
+        self.assertEqual(context.user_data.get("menu_state"), production.MY_MS_BATCH_ACTION_STATE)
+        self.assertEqual(context.user_data.get("my_ms_batch_action", {}).get("batch_id"), 10)
+        show_overview.assert_awaited_once()
+        show_action_menu.assert_not_awaited()
+
+    async def test_stale_row_action_state_recovers_to_batch_selection_and_opens_overview(self):
+        context = _DummyContext(
+            {
+                "menu_state": production.MY_MS_JOBS_ACTION_STATE,
+                "my_ms_jobs_action": {"selected_record": {"id": 99, "fields": {"batch_id": 99}}},
+                "my_ms_jobs_batch_selection": {
+                    "options": ["B-10"],
+                    "page": 0,
+                    "page_size": 5,
+                    "parent_state": production.MY_MS_JOBS_FILTER_STATE,
+                },
+            }
+        )
+        update = _DummyUpdate("1")
+
+        class _FakeRepo:
+            def get_master_by_batch_no(self, batch_no: str):
+                return {"id": 10, "fields": {"batch_no": batch_no}}
+
+        with (
+            patch("pulse.integrations.production.ProductionRepo", return_value=_FakeRepo()),
+            patch("pulse.integrations.production._show_ms_batch_tracker_overview", new=AsyncMock()) as show_overview,
+            patch("pulse.integrations.production._reply", new=AsyncMock()) as reply_mock,
+        ):
+            handled = await production.handle_production_state_text(update, context, update.effective_message.text)
+
+        self.assertTrue(handled)
+        self.assertEqual(context.user_data.get("menu_state"), production.MY_MS_BATCH_ACTION_STATE)
+        self.assertEqual(context.user_data.get("my_ms_batch_action", {}).get("batch_id"), 10)
+        show_overview.assert_awaited_once()
+        reply_texts = [call.args[1] for call in reply_mock.await_args_list if len(call.args) > 1]
+        self.assertNotIn("Choose one action from menu.", reply_texts)
 
     async def test_fallback_routes_all_production_states_to_production_handler(self):
         production_states = [

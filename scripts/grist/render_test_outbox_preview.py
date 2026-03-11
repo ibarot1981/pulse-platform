@@ -130,8 +130,12 @@ def _buttons_html(buttons_json: str) -> str:
 def render_html(rows: list[dict]) -> str:
     cards: list[str] = []
     unique_users: set[str] = set()
+    unique_sessions: set[str] = set()
     for row in rows:
         fields = row.get("fields", {})
+        session_raw = str(fields.get("session_id", "")).strip()
+        session = html.escape(session_raw or "-")
+        session_attr = html.escape(session_raw, quote=True)
         recipient_raw = str(fields.get("recipient_user_id", "")).strip()
         recipient = html.escape(recipient_raw)
         recipient_attr = html.escape(recipient_raw, quote=True)
@@ -143,10 +147,13 @@ def render_html(rows: list[dict]) -> str:
         text = html.escape(str(fields.get("message_text", ""))).replace("\n", "<br>")
         buttons = _buttons_html(str(fields.get("buttons_json", "")))
         unique_users.add(recipient_raw)
+        if session_raw:
+            unique_sessions.add(session_raw)
         cards.append(
             f"""
-            <article class="msg" data-user="{recipient_attr}">
+            <article class="msg" data-user="{recipient_attr}" data-session="{session_attr}">
               <div class="meta">
+                <span>Session: {session}</span>
                 <span>User: {recipient}</span>
                 <span>Role: {role or "-"}</span>
                 <span>Event: {event_type}</span>
@@ -166,6 +173,11 @@ def render_html(rows: list[dict]) -> str:
         escaped = html.escape(user)
         user_options.append(f'<option value="{escaped}">{escaped}</option>')
     user_options_html = "".join(user_options)
+    session_options = ['<option value="">All sessions</option>']
+    for session in sorted(s for s in unique_sessions if s):
+        escaped = html.escape(session)
+        session_options.append(f'<option value="{escaped}">{escaped}</option>')
+    session_options_html = "".join(session_options)
 
     return f"""<!doctype html>
 <html lang="en">
@@ -242,6 +254,8 @@ def render_html(rows: list[dict]) -> str:
     <div class="hint">Render is Telegram-like for message structure, text, and buttons. Hover a button to inspect callback payload.</div>
     <div class="badge">Rows: {len(rows)}</div>
     <div class="toolbar">
+      <label for="sessionFilter">Filter by session:</label>
+      <select id="sessionFilter">{session_options_html}</select>
       <label for="userFilter">Filter by user:</label>
       <select id="userFilter">{user_options_html}</select>
       <span id="rowsInfo" class="rows-info"></span>
@@ -251,6 +265,7 @@ def render_html(rows: list[dict]) -> str:
   <script>
     (function () {{
       const filter = document.getElementById("userFilter");
+      const sessionFilter = document.getElementById("sessionFilter");
       const rowsInfo = document.getElementById("rowsInfo");
       const rows = Array.from(document.querySelectorAll(".msg"));
       const copyStateByButton = new Map();
@@ -300,11 +315,15 @@ def render_html(rows: list[dict]) -> str:
       }}
 
       function applyFilter() {{
-        const selected = filter.value;
+        const selectedUser = filter.value;
+        const selectedSession = sessionFilter.value;
         let visible = 0;
         for (const row of rows) {{
           const user = row.getAttribute("data-user") || "";
-          const show = !selected || user === selected;
+          const session = row.getAttribute("data-session") || "";
+          const userMatch = !selectedUser || user === selectedUser;
+          const sessionMatch = !selectedSession || session === selectedSession;
+          const show = userMatch && sessionMatch;
           row.style.display = show ? "" : "none";
           if (show) visible += 1;
         }}
@@ -312,6 +331,7 @@ def render_html(rows: list[dict]) -> str:
       }}
 
       filter.addEventListener("change", applyFilter);
+      sessionFilter.addEventListener("change", applyFilter);
       document.querySelectorAll(".btn").forEach(btn => {{
         btn.addEventListener("click", handleButtonCopy);
       }});
