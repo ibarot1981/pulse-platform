@@ -22,6 +22,8 @@ SELECTING_PRODUCT_MODEL_STATE = "selecting_product_model"
 SELECTING_PRODUCT_PARTS_STATE = "selecting_product_parts"
 ENTERING_BATCH_QTY_STATE = "entering_batch_qty"
 SELECTING_BATCH_TYPE_STATE = "selecting_batch_type"
+SELECTING_BATCH_OWNER_STATE = "selecting_batch_owner"
+SELECTING_BATCH_NOTIFIERS_STATE = "selecting_batch_notifiers"
 CONFIRMING_BATCH_STATE = "confirming_batch"
 AWAITING_APPROVAL_STATE = "awaiting_approval"
 PENDING_APPROVALS_SELECTION_STATE = "pending_approvals_selection"
@@ -162,6 +164,8 @@ def _clear_flow(context):
     context.user_data.pop("my_ms_jobs_batch_selection", None)
     context.user_data.pop("view_batch_selection", None)
     context.user_data.pop("my_ms_jobs_handoff_reject_remarks", None)
+    context.user_data.pop("batch_owner_selection", None)
+    context.user_data.pop("batch_notifier_selection", None)
 
 
 def _build_keyboard(rows: list[list[str]]):
@@ -417,10 +421,20 @@ def _normalize_role_name(value: str) -> str:
     return " ".join(str(value or "").strip().lower().replace("_", " ").replace("-", " ").split())
 
 
+def _role_tokens(value: str) -> set[str]:
+    raw = str(value or "")
+    tokens: set[str] = set()
+    for chunk in raw.replace(",", "|").split("|"):
+        normalized = _normalize_role_name(chunk)
+        if normalized:
+            tokens.add(normalized)
+    return tokens
+
+
 def _role_matches(left: str, right: str) -> bool:
-    lval = _normalize_role_name(left)
-    rval = _normalize_role_name(right)
-    return bool(lval and rval and lval == rval)
+    left_tokens = _role_tokens(left)
+    right_tokens = _role_tokens(right)
+    return bool(left_tokens and right_tokens and left_tokens.intersection(right_tokens))
 
 
 def _map_lookup(mapping: dict, key) -> str:
@@ -859,7 +873,13 @@ def _filter_ms_rows_for_batch_visibility(
     return [
         row
         for row in rows
-        if _is_ms_row_visible_to_role(repo, row.get("fields", {}), user_role_name)
+        if _is_ms_row_visible_to_role(
+            repo,
+            row.get("fields", {}),
+            user_role_name,
+            viewer_user_id=normalized_viewer,
+            row_id=row.get("id") if isinstance(row.get("id"), int) else None,
+        )
     ]
 
 
@@ -927,14 +947,18 @@ def _build_ms_batch_snapshot_overview_text(
     batch_no: str,
     user_role_name: str = "",
     viewer_user_id: str = "",
+    user_independent: bool = False,
 ) -> str:
-    rows = _filter_ms_rows_for_batch_visibility(
-        repo,
-        _ordered_ms_rows_for_batch(repo, batch_id),
-        batch_id,
-        user_role_name,
-        viewer_user_id,
-    )
+    if user_independent:
+        rows = _ordered_ms_rows_for_batch(repo, batch_id)
+    else:
+        rows = _filter_ms_rows_for_batch_visibility(
+            repo,
+            _ordered_ms_rows_for_batch(repo, batch_id),
+            batch_id,
+            user_role_name,
+            viewer_user_id,
+        )
     if not rows:
         return f"Batch Overview\nBatch No: {batch_no or '-'}\nNo MS flows found for this batch."
 
@@ -989,6 +1013,7 @@ def _build_ms_batch_snapshot_overview_text(
         "Flow Snapshot:",
     ]
     lines.extend(flow_lines)
+    lines.extend(["", f"Select flow number (1-{len(rows)}) to view actions."])
     return "\n".join(lines)
 
 
@@ -1021,9 +1046,9 @@ def _build_ms_batch_overview_inline_keyboard(
                 continue
             fields = row.get("fields", {})
             action_code = ""
-            if _can_mark_stage_done(repo, fields, user_role_name):
+            if _can_mark_stage_done(repo, fields, user_role_name, viewer_user_id=viewer_user_id, row_id=row_id):
                 action_code = "dn"
-            elif _can_confirm_handoff(repo, fields, user_role_name):
+            elif _can_confirm_handoff(repo, fields, user_role_name, viewer_user_id=viewer_user_id, row_id=row_id):
                 action_code = "cf"
             if not action_code:
                 continue
@@ -1075,6 +1100,7 @@ def _build_ms_batch_flow_selector_keyboard(
     page: int,
     page_size: int,
     user_role_name: str,
+    viewer_user_id: str = "",
 ) -> InlineKeyboardMarkup:
     page_rows, start, end = _paginate(rows, page, page_size)
     keyboard: list[list[InlineKeyboardButton]] = []
@@ -1095,7 +1121,7 @@ def _build_ms_batch_flow_selector_keyboard(
                 callback_data=_ms_batch_callback_data(detail_action, batch_id, str(row_id), str(page)),
             )
         ]
-        if _can_mark_stage_done(repo, row.get("fields", {}), user_role_name):
+        if _can_mark_stage_done(repo, row.get("fields", {}), user_role_name, viewer_user_id=viewer_user_id, row_id=row_id):
             row_buttons.append(
                 InlineKeyboardButton(
                     "✅ Done",
@@ -1213,11 +1239,15 @@ async def _show_ms_batch_tracker_overview(update, context, batch_id: int, batch_
     role_name = _resolve_user_role_name(repo, context)
     user = context.user_data.get("user", {})
     viewer_user_id = str(user.get("user_id") or "").strip()
-    text = _build_ms_batch_snapshot_overview_text(repo, batch_id, batch_no, role_name, viewer_user_id)
-    await update.effective_message.reply_text(
-        _format_menu_text(text),
-        reply_markup=_build_ms_batch_overview_inline_keyboard(repo, batch_id, role_name, viewer_user_id),
+    text = _build_ms_batch_snapshot_overview_text(
+        repo,
+        batch_id,
+        batch_no,
+        role_name,
+        viewer_user_id,
+        user_independent=True,
     )
+    await update.effective_message.reply_text(_format_menu_text(text))
 
 
 def _find_ms_row_index(rows: list[dict], row_id: int) -> int:
@@ -1231,7 +1261,7 @@ def _resolve_batch_no(repo: ProductionRepo, batch_id: int) -> str:
     return str((repo.get_master_by_id(batch_id) or {}).get("fields", {}).get("batch_no") or "")
 
 
-async def _edit_ms_batch_tracker_message(query, text: str, reply_markup: InlineKeyboardMarkup) -> None:
+async def _edit_ms_batch_tracker_message(query, text: str, reply_markup: InlineKeyboardMarkup | None = None) -> None:
     formatted = _format_menu_text(text)
     try:
         await query.edit_message_text(formatted, reply_markup=reply_markup)
@@ -1239,24 +1269,55 @@ async def _edit_ms_batch_tracker_message(query, text: str, reply_markup: InlineK
         await query.message.reply_text(formatted, reply_markup=reply_markup)
 
 
-def _can_mark_stage_done(repo: ProductionRepo, row_fields: dict, user_role_name: str) -> bool:
-    if not user_role_name:
+def _can_mark_stage_done(
+    repo: ProductionRepo,
+    row_fields: dict,
+    user_role_name: str,
+    viewer_user_id: str = "",
+    row_id: int | None = None,
+) -> bool:
+    if not user_role_name and not viewer_user_id:
         return False
     status = str(row_fields.get("current_status") or row_fields.get("status") or "").strip()
     if status == _MS_PENDING_CONFIRMATION or _is_ms_row_completed_status(status):
         return False
+    normalized_user_id = str(viewer_user_id or "").strip()
+    if normalized_user_id:
+        process_seq = _normalize_process_seq(row_fields)
+        current_stage = str(row_fields.get("current_stage_name") or "").strip()
+        stage_assignees = _get_stage_assignment_user_ids(repo, process_seq, current_stage, can_act_only=True)
+        if stage_assignees:
+            return normalized_user_id in stage_assignees
+        if isinstance(row_id, int) and normalized_user_id in _get_row_delegated_user_ids(repo, row_id, can_act_only=True):
+            return True
+        batch_id = _normalize_ref(row_fields.get("batch_id"))
+        if isinstance(batch_id, int) and normalized_user_id in _get_batch_notifier_user_ids(repo, batch_id):
+            return True
     process_seq = _normalize_process_seq(row_fields)
     current_stage = str(row_fields.get("current_stage_name") or "").strip()
     current_role = _resolve_supervisor_role_for_stage(repo, process_seq, current_stage)
     return _role_matches(user_role_name, current_role)
 
 
-def _can_confirm_handoff(repo: ProductionRepo, row_fields: dict, user_role_name: str) -> bool:
-    if not user_role_name:
+def _can_confirm_handoff(
+    repo: ProductionRepo,
+    row_fields: dict,
+    user_role_name: str,
+    viewer_user_id: str = "",
+    row_id: int | None = None,
+) -> bool:
+    if not user_role_name and not viewer_user_id:
         return False
     status = str(row_fields.get("current_status") or row_fields.get("status") or "").strip()
     if status != _MS_PENDING_CONFIRMATION:
         return False
+    normalized_user_id = str(viewer_user_id or "").strip()
+    if normalized_user_id:
+        process_seq = _normalize_process_seq(row_fields)
+        next_stage = str(row_fields.get("next_stage_name") or "").strip()
+        next_assignees = _get_stage_assignment_user_ids(repo, process_seq, next_stage, can_act_only=True) if next_stage else set()
+        if next_assignees:
+            return normalized_user_id in next_assignees
     process_seq = _normalize_process_seq(row_fields)
     next_stage = str(row_fields.get("next_stage_name") or "").strip()
     next_role = _resolve_supervisor_role_for_stage(repo, process_seq, next_stage) if next_stage else ""
@@ -1278,7 +1339,6 @@ async def _render_ms_batch_flow_selector(query, context, repo: ProductionRepo, b
         await _edit_ms_batch_tracker_message(
             query,
             f"Batch Overview\nBatch No: {_resolve_batch_no(repo, batch_id) or '-'}\nNo MS flows found for this batch.",
-            _build_ms_batch_overview_inline_keyboard(repo, batch_id, user_role_name, viewer_user_id),
         )
         return
     safe_mode = "d" if mode not in ("d", "t") else mode
@@ -1287,7 +1347,7 @@ async def _render_ms_batch_flow_selector(query, context, repo: ProductionRepo, b
     safe_page = max(0, min(page, max_page))
     text = _build_ms_batch_flow_selector_text(repo, rows, safe_mode, safe_page, page_size)
     keyboard = _build_ms_batch_flow_selector_keyboard(
-        repo, batch_id, rows, safe_mode, safe_page, page_size, user_role_name
+        repo, batch_id, rows, safe_mode, safe_page, page_size, user_role_name, viewer_user_id
     )
     await _edit_ms_batch_tracker_message(query, text, keyboard)
 
@@ -1315,8 +1375,8 @@ async def _render_ms_batch_flow_detail(query, context, repo: ProductionRepo, bat
         row_id,
         page,
         "d",
-        can_mark_done=_can_mark_stage_done(repo, row_fields, user_role_name),
-        can_confirm=_can_confirm_handoff(repo, row_fields, user_role_name),
+        can_mark_done=_can_mark_stage_done(repo, row_fields, user_role_name, viewer_user_id=viewer_user_id, row_id=row_id),
+        can_confirm=_can_confirm_handoff(repo, row_fields, user_role_name, viewer_user_id=viewer_user_id, row_id=row_id),
         can_schedule=_is_batch_schedulable_for_role(repo, batch_id, user_role_name),
     )
     await _edit_ms_batch_tracker_message(query, text, keyboard)
@@ -1345,8 +1405,8 @@ async def _render_ms_batch_flow_timeline(query, context, repo: ProductionRepo, b
         row_id,
         page,
         "t",
-        can_mark_done=_can_mark_stage_done(repo, row_fields, user_role_name),
-        can_confirm=_can_confirm_handoff(repo, row_fields, user_role_name),
+        can_mark_done=_can_mark_stage_done(repo, row_fields, user_role_name, viewer_user_id=viewer_user_id, row_id=row_id),
+        can_confirm=_can_confirm_handoff(repo, row_fields, user_role_name, viewer_user_id=viewer_user_id, row_id=row_id),
         can_schedule=_is_batch_schedulable_for_role(repo, batch_id, user_role_name),
     )
     await _edit_ms_batch_tracker_message(query, text, keyboard)
@@ -1545,12 +1605,24 @@ async def _notify_stage_event(
     batch_id: int,
     message: str,
     supervisor_role: str = "",
+    recipient_user_ids: list[str] | None = None,
     reply_markup=None,
+    recipient_renderer=None,
 ) -> None:
     event_context = {"batch_id": batch_id}
     if supervisor_role:
         event_context["recipient_roles"] = [supervisor_role]
-    await _notify_event(context.bot, event_type, message, context=event_context, reply_markup=reply_markup)
+    normalized_user_ids = [str(user_id).strip() for user_id in (recipient_user_ids or []) if str(user_id).strip()]
+    if normalized_user_ids:
+        event_context["recipient_user_ids"] = sorted(set(normalized_user_ids))
+    await _notify_event(
+        context.bot,
+        event_type,
+        message,
+        context=event_context,
+        reply_markup=reply_markup,
+        recipient_renderer=recipient_renderer,
+    )
 
 
 async def _notify_event(
@@ -1771,14 +1843,130 @@ def _resolve_costing_user_id(value, by_record_id: dict[int, str], by_user_id: di
     return by_user_id.get(text, text).strip()
 
 
+def _normalize_reflist(value) -> list[int]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        items = value[1:] if value and value[0] == "L" else value
+    else:
+        items = [value]
+    refs: list[int] = []
+    for item in items:
+        item_norm = _normalize_ref(item)
+        if isinstance(item_norm, int):
+            refs.append(item_norm)
+            continue
+        text = str(item_norm or "").strip()
+        if text.isdigit():
+            refs.append(int(text))
+    return refs
+
+
+def _get_batch_notifier_user_ids(repo: ProductionRepo, batch_id: int) -> set[str]:
+    master = repo.get_master_by_id(batch_id)
+    if not master:
+        return set()
+    fields = master.get("fields", {})
+    notifier_refs = _normalize_reflist(fields.get("notifier_users"))
+    if not notifier_refs:
+        return set()
+    by_record_id, by_user_id = _build_costing_user_id_indexes(repo)
+    result: set[str] = set()
+    for ref in notifier_refs:
+        user_id = _resolve_costing_user_id(ref, by_record_id, by_user_id)
+        if user_id:
+            result.add(user_id)
+    return result
+
+
+def _get_stage_assignment_user_ids(repo: ProductionRepo, process_seq, stage_name: str, can_act_only: bool = False) -> set[str]:
+    if not hasattr(repo, "get_process_seq_ref_id"):
+        return set()
+    try:
+        assignments = repo.costing_client.get_records("ProcessStageUserAssignment")
+        process_stages = repo.costing_client.get_records("ProcessStage")
+        users_rows = repo.costing_client.get_records("Users")
+    except Exception:
+        return set()
+
+    seq_id = repo.get_process_seq_ref_id(process_seq)
+    if seq_id is None:
+        return set()
+    stage_name_clean = str(stage_name or "").strip()
+    if not stage_name_clean:
+        return set()
+
+    process_stage_ids: set[int] = set()
+    for row in process_stages:
+        rec_id = row.get("id")
+        if not isinstance(rec_id, int):
+            continue
+        fields = row.get("fields", {})
+        row_seq = _normalize_ref(fields.get("process_seq_id"))
+        row_stage_name = str(fields.get("stage_name") or "").strip()
+        if row_seq == seq_id and row_stage_name == stage_name_clean:
+            process_stage_ids.add(rec_id)
+
+    if not process_stage_ids:
+        return set()
+
+    user_id_by_record_id = {
+        row.get("id"): str(row.get("fields", {}).get("User_ID") or "").strip()
+        for row in users_rows
+        if isinstance(row.get("id"), int)
+    }
+    user_ids: set[str] = set()
+    for row in assignments:
+        fields = row.get("fields", {})
+        if not bool(fields.get("active", True)):
+            continue
+        if can_act_only and not bool(fields.get("can_act", True)):
+            continue
+        stage_ref = _normalize_ref(fields.get("process_stage_id"))
+        if stage_ref not in process_stage_ids:
+            continue
+        user_ref = _normalize_ref(fields.get("user_id"))
+        if not isinstance(user_ref, int):
+            continue
+        user_code = user_id_by_record_id.get(user_ref, "")
+        if user_code:
+            user_ids.add(user_code)
+    return user_ids
+
+
+def _get_row_delegated_user_ids(repo: ProductionRepo, row_id: int, can_act_only: bool = False) -> set[str]:
+    if not isinstance(row_id, int):
+        return set()
+    try:
+        delegations = repo.costing_client.get_records("BatchMSDelegation")
+    except Exception:
+        return set()
+    by_record_id, by_user_id = _build_costing_user_id_indexes(repo)
+    result: set[str] = set()
+    for row in delegations:
+        fields = row.get("fields", {})
+        if not bool(fields.get("active", True)):
+            continue
+        if can_act_only and not bool(fields.get("can_act", True)):
+            continue
+        row_ref = _normalize_ref(fields.get("batch_ms_id"))
+        if row_ref != row_id:
+            continue
+        to_ref = fields.get("delegated_to_user")
+        user_id = _resolve_costing_user_id(to_ref, by_record_id, by_user_id)
+        if user_id:
+            result.add(user_id)
+    return result
+
+
 def _get_batch_owner_user_ids(repo: ProductionRepo, master_record: dict) -> set[str]:
     master_fields = master_record.get("fields", {})
-    created_by = master_fields.get("created_by")
-    if not created_by:
+    owner_ref = master_fields.get("owner_user") or master_fields.get("created_by")
+    if not owner_ref:
         return set()
 
     by_record_id, by_user_id = _build_costing_user_id_indexes(repo)
-    owner_user_id = _resolve_costing_user_id(created_by, by_record_id, by_user_id)
+    owner_user_id = _resolve_costing_user_id(owner_ref, by_record_id, by_user_id)
     return {owner_user_id} if owner_user_id else set()
 
 
@@ -1823,6 +2011,27 @@ def _batch_approved_recipient_renderer(
         if role_name in first_stage_roles:
             return {"skip": True}
 
+        if _is_approval_actor_subscriber(recipient):
+            return {}
+        return {"skip": True}
+
+    return _render
+
+
+def _owner_only_recipient_renderer(owner_user_ids: set[str]):
+    owner_ids = {str(owner_id or "").strip() for owner_id in owner_user_ids if str(owner_id or "").strip()}
+
+    def _render(recipient: dict) -> dict:
+        user_id = str(recipient.get("user_id") or "").strip()
+        if user_id and user_id in owner_ids:
+            return {}
+        return {"skip": True}
+
+    return _render
+
+
+def _approver_only_recipient_renderer():
+    def _render(recipient: dict) -> dict:
         if _is_approval_actor_subscriber(recipient):
             return {}
         return {"skip": True}
@@ -1985,6 +2194,86 @@ def _resolve_selected_part_ids(repo: ProductionRepo, flow: dict) -> list[int]:
     return selected_part_ids
 
 
+def _get_production_supervisor_candidates(repo: ProductionRepo) -> list[dict]:
+    candidates: list[dict] = []
+    for user in repo.get_users():
+        fields = user.get("fields", {})
+        if not fields.get("Active"):
+            continue
+        user_id = str(fields.get("User_ID") or "").strip()
+        if not user_id:
+            continue
+        role_names = repo.get_role_names_by_user_id(user_id)
+        if not any(_role_matches(role, "Production_Supervisor") for role in role_names):
+            continue
+        costing_ref = repo.get_costing_user_ref_by_user_id(user_id)
+        if not isinstance(costing_ref, int):
+            continue
+        candidates.append(
+            {
+                "user_id": user_id,
+                "name": str(fields.get("Name") or user_id),
+                "costing_ref": costing_ref,
+            }
+        )
+    candidates.sort(key=lambda row: str(row.get("name") or ""))
+    return candidates
+
+
+async def _show_batch_owner_selection(update, context, candidates: list[dict]) -> None:
+    context.user_data["batch_owner_selection"] = {"candidates": candidates}
+    context.user_data["menu_state"] = SELECTING_BATCH_OWNER_STATE
+    lines = ["Select Batch Owner (Production Supervisor):", "Enter one number like 1", ""]
+    for idx, row in enumerate(candidates, start=1):
+        lines.append(f"{idx}. {row.get('name')} ({row.get('user_id')})")
+    await _reply(update, "\n".join(lines), [[BACK_LABEL]])
+
+
+async def _show_batch_notifier_selection(update, context, candidates: list[dict]) -> None:
+    context.user_data["batch_notifier_selection"] = {"candidates": candidates}
+    context.user_data["menu_state"] = SELECTING_BATCH_NOTIFIERS_STATE
+    lines = [
+        "Select Batch Notifiers (Production Supervisors):",
+        "Enter comma-separated numbers like 1,3",
+        "Enter 0 to skip.",
+        "",
+    ]
+    for idx, row in enumerate(candidates, start=1):
+        lines.append(f"{idx}. {row.get('name')} ({row.get('user_id')})")
+    await _reply(update, "\n".join(lines), [[BACK_LABEL]])
+
+
+async def _continue_batch_creation_actor_selection(update, context) -> bool:
+    flow = _get_flow(context)
+    repo = ProductionRepo()
+    user = context.user_data.get("user", {})
+    creator_user_id = str(user.get("user_id") or "").strip()
+    creator_user_ref = repo.get_costing_user_ref_by_user_id(creator_user_id)
+    if not isinstance(creator_user_ref, int):
+        await _reply(update, "Could not map creator in Costing Users. Please sync users and try again.")
+        return False
+
+    role_name = repo.get_role_name_by_user_id(creator_user_id)
+    is_admin_or_pm = _role_matches(role_name, "System_Admin") or _role_matches(role_name, "Production_Manager")
+    owner_ref = flow.get("owner_user_ref")
+    if not isinstance(owner_ref, int):
+        if is_admin_or_pm:
+            candidates = _get_production_supervisor_candidates(repo)
+            if not candidates:
+                await _reply(update, "No active Production Supervisors available to assign as owner.")
+                return False
+            await _show_batch_owner_selection(update, context, candidates)
+            return False
+        flow["owner_user_ref"] = creator_user_ref
+
+    notifier_refs = flow.get("notifier_user_refs")
+    if not isinstance(notifier_refs, list):
+        candidates = _get_production_supervisor_candidates(repo)
+        await _show_batch_notifier_selection(update, context, candidates)
+        return False
+    return True
+
+
 async def _create_batch_from_flow(update, context):
     flow = _get_flow(context)
     repo = ProductionRepo()
@@ -1995,6 +2284,19 @@ async def _create_batch_from_flow(update, context):
     batch_type, include_ms, include_cnc, include_store = _resolve_type_flags(flow["batch_type"])
     batch_no = generate_batch_number(repo, flow["model_code"], include_ms, include_cnc, include_store)
     selected_part_ids = _resolve_selected_part_ids(repo, flow)
+    owner_user_ref = flow.get("owner_user_ref")
+    if not isinstance(owner_user_ref, int):
+        owner_user_ref = creator_user_ref
+    notifier_user_refs = []
+    for ref in flow.get("notifier_user_refs", []):
+        try:
+            notifier_user_refs.append(int(ref))
+        except (TypeError, ValueError):
+            continue
+    notifier_user_refs = [ref for ref in sorted(set(notifier_user_refs)) if ref != owner_user_ref]
+    if isinstance(creator_user_ref, int) and creator_user_ref in notifier_user_refs:
+        notifier_user_refs = [ref for ref in notifier_user_refs if ref != creator_user_ref]
+    notifier_reflist = ["L"] + notifier_user_refs if notifier_user_refs else ["L"]
 
     created_date = _now_iso()
     master_id = repo.create_master_batch(
@@ -2007,6 +2309,8 @@ async def _create_batch_from_flow(update, context):
             "include_cnc": include_cnc,
             "include_store": include_store,
             "created_by": creator_user_ref,
+            "owner_user": owner_user_ref,
+            "notifier_users": notifier_reflist,
             "created_date": created_date,
             "start_date": None,
             "scheduled_date": None,
@@ -2016,6 +2320,7 @@ async def _create_batch_from_flow(update, context):
             "approved_by": "",
             "overall_status": "Pending Approval",
             "selected_part_ids": _to_int_list_csv(selected_part_ids),
+            "notification_users": ",".join(str(ref) for ref in notifier_user_refs),
         }
     )
     repo.add_lifecycle_history(master_id, "Batch Created", creator_user_ref, "Batch created and sent for approval")
@@ -2050,7 +2355,7 @@ def _is_production_manager(context) -> bool:
 
     repo = ProductionRepo()
     role_name = repo.get_role_name_by_user_id(user_id)
-    return role_name in ("Production_Manager", "System_Admin")
+    return _role_matches(role_name, "Production_Manager") or _role_matches(role_name, "System_Admin")
 
 
 async def start_pending_approvals(update, context) -> None:
@@ -2181,6 +2486,41 @@ async def _send_ms_batch_first_stage_detail_messages(
         await query.message.reply_text("No batch flow details found for your role.")
 
 
+def _resolve_ms_batch_flow_message_payload(
+    repo: ProductionRepo,
+    batch_id: int,
+    flow_number: int,
+) -> tuple[str, InlineKeyboardMarkup] | None:
+    if flow_number <= 0:
+        return None
+    rows = _ordered_ms_rows_for_batch(repo, batch_id)
+    if flow_number > len(rows):
+        return None
+
+    row = rows[flow_number - 1]
+    row_id = row.get("id")
+    if not isinstance(row_id, int):
+        return None
+    fields = row.get("fields", {})
+    stage_name = str(fields.get("current_stage_name") or "").strip()
+    next_stage = _resolve_next_stage_for_row(repo, fields)
+    part_name = _resolve_ms_row_part_text(repo, row)
+    qty = _format_qty(float(fields.get("total_qty") or fields.get("required_qty") or 0))
+    batch = repo.get_master_by_id(batch_id) or {}
+    batch_no = str(batch.get("fields", {}).get("batch_no") or "")
+    batch_by = _get_batch_creator_name_map(repo, {batch_id}).get(batch_id, "-")
+
+    message = _build_ms_stage_pending_message(
+        batch_no=batch_no,
+        batch_by=batch_by,
+        part_name=part_name,
+        current_stage=stage_name,
+        next_stage=next_stage,
+        qty=qty,
+    )
+    return message, build_stage_inline_keyboard(batch_id, row_id)
+
+
 async def _notify_ms_first_stage(repo: ProductionRepo, context, batch_id: int, ms_rows: list[dict], batch_no: str) -> None:
     batch = repo.get_master_by_id(batch_id)
     if not batch:
@@ -2213,6 +2553,13 @@ async def _notify_ms_first_stage(repo: ProductionRepo, context, batch_id: int, m
         return
 
     for supervisor_role, role_rows in rows_by_role.items():
+        recipient_user_ids: set[str] = set()
+        for role_row in role_rows:
+            role_fields = role_row.get("fields", role_row)
+            process_seq = _normalize_process_seq(role_fields)
+            stage_name = str(role_fields.get("current_stage_name") or "").strip()
+            stage_users = _get_stage_assignment_user_ids(repo, process_seq, stage_name, can_act_only=False)
+            recipient_user_ids.update(stage_users)
         message = _build_ms_batch_approval_summary_message(
             repo=repo,
             batch_no=batch_no,
@@ -2226,7 +2573,8 @@ async def _notify_ms_first_stage(repo: ProductionRepo, context, batch_id: int, m
             "ms_stage_pending",
             batch_id,
             message,
-            supervisor_role=supervisor_role,
+            supervisor_role="" if recipient_user_ids else supervisor_role,
+            recipient_user_ids=sorted(recipient_user_ids),
             reply_markup=_build_ms_batch_view_detail_keyboard(batch_id),
         )
 
@@ -2419,8 +2767,14 @@ async def _mark_batch_stage_done(repo: ProductionRepo, context, batch_id: int, u
     return done_count
 
 
-def _is_ms_row_visible_to_role(repo: ProductionRepo, row_fields: dict, role_name: str) -> bool:
-    if not role_name:
+def _is_ms_row_visible_to_role(
+    repo: ProductionRepo,
+    row_fields: dict,
+    role_name: str,
+    viewer_user_id: str = "",
+    row_id: int | None = None,
+) -> bool:
+    if not role_name and not viewer_user_id:
         return False
 
     process_seq = _normalize_process_seq(row_fields)
@@ -2432,6 +2786,20 @@ def _is_ms_row_visible_to_role(repo: ProductionRepo, row_fields: dict, role_name
     supervisor_role = str(row_fields.get("current_stage_role_name") or "").strip()
     if not supervisor_role:
         supervisor_role = current_role
+    normalized_viewer = str(viewer_user_id or "").strip()
+    batch_id = _normalize_ref(row_fields.get("batch_id"))
+
+    if normalized_viewer:
+        current_stage_users = _get_stage_assignment_user_ids(repo, process_seq, stage_name, can_act_only=False)
+        next_stage_users = _get_stage_assignment_user_ids(repo, process_seq, next_stage_name, can_act_only=False) if next_stage_name else set()
+        if current_stage_users and normalized_viewer in current_stage_users:
+            return True
+        if current_status == _MS_PENDING_CONFIRMATION and next_stage_users and normalized_viewer in next_stage_users:
+            return True
+        if isinstance(row_id, int) and normalized_viewer in _get_row_delegated_user_ids(repo, row_id, can_act_only=False):
+            return True
+        if isinstance(batch_id, int) and normalized_viewer in _get_batch_notifier_user_ids(repo, batch_id):
+            return True
 
     if current_status == _MS_PENDING_CONFIRMATION:
         return any(
@@ -2448,8 +2816,8 @@ def _is_ms_row_visible_to_role(repo: ProductionRepo, row_fields: dict, role_name
     )
 
 
-def _list_ms_jobs_for_user_role(repo: ProductionRepo, role_name: str) -> list[dict]:
-    if not role_name:
+def _list_ms_jobs_for_user_role(repo: ProductionRepo, role_name: str, viewer_user_id: str = "") -> list[dict]:
+    if not role_name and not viewer_user_id:
         return []
 
     master_fields_by_id = {
@@ -2461,7 +2829,8 @@ def _list_ms_jobs_for_user_role(repo: ProductionRepo, role_name: str) -> list[di
     batch_ids = set()
     for record in repo.costing_client.get_records("ProductBatchMS"):
         fields = record.get("fields", {})
-        if not _is_ms_row_visible_to_role(repo, fields, role_name):
+        row_id = record.get("id")
+        if not _is_ms_row_visible_to_role(repo, fields, role_name, viewer_user_id=viewer_user_id, row_id=row_id):
             continue
         batch_id = _normalize_ref(fields.get("batch_id"))
         if not isinstance(batch_id, int):
@@ -2525,7 +2894,7 @@ def _filter_ms_jobs(records: list[dict], mode: str) -> list[dict]:
 
 
 def _can_view_all_ms_jobs(role_name: str) -> bool:
-    return str(role_name or "").strip() in {"Production_Manager", "System_Admin"}
+    return _role_matches(role_name, "Production_Manager") or _role_matches(role_name, "System_Admin")
 
 
 def _rows_for_my_ms_jobs_view(
@@ -2830,7 +3199,7 @@ async def _show_view_batch_page(update, context) -> None:
 async def start_view_batch(update, context) -> None:
     repo = ProductionRepo()
     role_name = _resolve_user_role_name(repo, context)
-    if role_name not in ("System_Admin", "Production_Manager"):
+    if not (_role_matches(role_name, "System_Admin") or _role_matches(role_name, "Production_Manager")):
         await _reply(update, "Only System Admin and Production Manager can use View Batch.")
         return
     records = _list_trackable_batches(repo)
@@ -2852,8 +3221,9 @@ async def start_my_ms_jobs(update, context) -> None:
     repo.ensure_ms_workflow_columns()
     user = context.user_data.get("user", {})
     role_name = repo.get_role_name_by_user_id(user.get("user_id", ""))
+    viewer_user_id = str(user.get("user_id") or "").strip()
     all_records = _list_all_ms_jobs_for_visibility(repo)
-    action_records = _list_ms_jobs_for_user_role(repo, role_name)
+    action_records = _list_ms_jobs_for_user_role(repo, role_name, viewer_user_id=viewer_user_id)
     if not all_records:
         set_main_menu_state(context)
         await _reply(update, "No approved MS jobs available.")
@@ -2997,7 +3367,8 @@ def _apply_my_ms_jobs_filter(
 
 def _refresh_my_ms_jobs_selection(context, repo: ProductionRepo, role_name: str) -> list[dict]:
     all_rows = _list_all_ms_jobs_for_visibility(repo)
-    action_rows = _list_ms_jobs_for_user_role(repo, role_name)
+    viewer_user_id = str(context.user_data.get("user", {}).get("user_id") or "").strip()
+    action_rows = _list_ms_jobs_for_user_role(repo, role_name, viewer_user_id=viewer_user_id)
     mode = context.user_data.get("my_ms_jobs_filter", _MS_VIEW_ACTION_REQUIRED)
     mode_value = str(context.user_data.get("my_ms_jobs_filter_value") or "").strip()
     batch_ids = {
@@ -3076,6 +3447,7 @@ async def _reject_ms_handoff_with_remarks(
     updated_by,
     user_role_name: str,
     remarks_text: str,
+    viewer_user_id: str = "",
 ) -> bool:
     row = repo.get_ms_row_by_id(row_id)
     if not row:
@@ -3092,8 +3464,7 @@ async def _reject_ms_handoff_with_remarks(
     current_stage = str(fields.get("current_stage_name") or "").strip()
     next_stage = str(fields.get("next_stage_name") or "").strip()
     current_role = _resolve_supervisor_role_for_stage(repo, process_seq, current_stage)
-    next_role = _resolve_supervisor_role_for_stage(repo, process_seq, next_stage) if next_stage else ""
-    if not _role_matches(user_role_name, next_role):
+    if not _can_confirm_handoff(repo, fields, user_role_name, viewer_user_id=viewer_user_id, row_id=row_id):
         return False
 
     new_status = f"{current_stage} Pending" if current_stage else "Pending"
@@ -3159,6 +3530,7 @@ async def _execute_ms_job_action(update, context, action_code: str, selected_rec
     repo = ProductionRepo()
     user = context.user_data.get("user", {})
     user_role_name = repo.get_role_name_by_user_id(user.get("user_id", ""))
+    viewer_user_id = str(user.get("user_id") or "").strip()
     updated_by = repo.get_costing_user_ref_by_user_id(user.get("user_id", ""))
     fields = selected_record.get("fields", {})
     batch_id = _normalize_ref(fields.get("batch_id"))
@@ -3207,19 +3579,17 @@ async def _execute_ms_job_action(update, context, action_code: str, selected_rec
         row_status = str(row_fields.get("current_status") or row_fields.get("status") or "").strip()
         process_seq = _normalize_process_seq(row_fields)
         stage_name = str(row_fields.get("current_stage_name") or "").strip()
-        next_stage = str(row_fields.get("next_stage_name") or "").strip()
         current_role = _resolve_supervisor_role_for_stage(repo, process_seq, stage_name)
-        next_role = _resolve_supervisor_role_for_stage(repo, process_seq, next_stage) if next_stage else ""
         if row_status == _MS_PENDING_CONFIRMATION:
             if action_code == "N":
-                if not _role_matches(user_role_name, next_role):
+                if not _can_confirm_handoff(repo, row_fields, user_role_name, viewer_user_id=viewer_user_id, row_id=row_id):
                     await _reply(update, "Only the next-stage supervisor can reject this handover.")
                     return True
                 context.user_data["my_ms_jobs_handoff_reject_remarks"] = {"row_id": row_id, "batch_id": batch_id}
                 context.user_data["menu_state"] = MY_MS_JOBS_HANDOFF_REJECT_REMARKS_STATE
                 await _reply(update, "Enter rejection remarks for this handoff:", [[BACK_LABEL]])
                 return True
-            if not _role_matches(user_role_name, next_role):
+            if not _can_confirm_handoff(repo, row_fields, user_role_name, viewer_user_id=viewer_user_id, row_id=row_id):
                 await _reply(update, "Only the next-stage supervisor can confirm this handover.")
                 return True
             try:
@@ -3344,6 +3714,9 @@ async def _mark_ms_stage_done_pending_confirmation(repo: ProductionRepo, context
     part_name = _resolve_ms_row_part_text(repo, fields)
     batch_no = str((repo.get_master_by_id(batch_id) or {}).get("fields", {}).get("batch_no") or "")
     batch_by = _get_batch_creator_name_map(repo, {batch_id}).get(batch_id, "")
+    master_record = repo.get_master_by_id(batch_id) or {}
+    owner_user_ids = _get_batch_owner_user_ids(repo, master_record)
+    is_final_stage_handoff = bool(next_stage and next_stage == stages[-1])
     if next_stage_role:
         await _notify_stage_event(
             context,
@@ -3360,7 +3733,19 @@ async def _mark_ms_stage_done_pending_confirmation(repo: ProductionRepo, context
             ),
             supervisor_role=next_stage_role,
             reply_markup=build_stage_confirm_inline_keyboard(batch_id, row_id),
+            recipient_renderer=_owner_only_recipient_renderer(owner_user_ids) if is_final_stage_handoff else None,
         )
+        if is_final_stage_handoff:
+            await _notify_event(
+                context.bot,
+                "ms_stage_pending",
+                (
+                    f"MS stage handoff pending confirmation for batch {batch_no}: {part_name} | "
+                    f"Current: {current_stage_name} | Next: {next_stage} | Status: {new_status}"
+                ),
+                context={"batch_id": batch_id, "recipient_roles": ["Production_Manager", "System_Admin"]},
+                recipient_renderer=_approver_only_recipient_renderer(),
+            )
     else:
         await _notify_stage_event(
             context,
@@ -3461,7 +3846,8 @@ async def advance_ms_stage(repo: ProductionRepo, context, row_id: int, updated_b
     repo.add_status_history(batch_id, "MS", row_id, old_status, new_status, updated_by, history_remarks)
 
     part_name = _resolve_ms_row_part_text(repo, fields)
-    batch_no = str((repo.get_master_by_id(batch_id) or {}).get("fields", {}).get("batch_no") or "")
+    master_record = repo.get_master_by_id(batch_id) or {}
+    batch_no = str(master_record.get("fields", {}).get("batch_no") or "")
     batch_by = _get_batch_creator_name_map(repo, {batch_id}).get(batch_id, "")
 
     await _notify_stage_event(
@@ -3484,6 +3870,8 @@ async def advance_ms_stage(repo: ProductionRepo, context, row_id: int, updated_b
             )
             return repo.get_ms_row_by_id(row_id) or row
         markup = build_stage_inline_keyboard(batch_id, row_id)
+        owner_user_ids = _get_batch_owner_user_ids(repo, master_record)
+        is_final_stage_transition = bool(next_stage == stages[-1])
         await _notify_stage_event(
             context,
             "ms_stage_pending",
@@ -3499,7 +3887,19 @@ async def advance_ms_stage(repo: ProductionRepo, context, row_id: int, updated_b
             ),
             supervisor_role=next_stage_role,
             reply_markup=markup,
+            recipient_renderer=_owner_only_recipient_renderer(owner_user_ids) if is_final_stage_transition else None,
         )
+        if is_final_stage_transition:
+            await _notify_event(
+                context.bot,
+                "ms_stage_pending",
+                (
+                    f"MS stage advanced to final stage for batch {batch_no}: {part_name} | "
+                    f"Current: {next_stage} | Status: {new_status}"
+                ),
+                context={"batch_id": batch_id, "recipient_roles": ["Production_Manager", "System_Admin"]},
+                recipient_renderer=_approver_only_recipient_renderer(),
+            )
     recalculate_master_overall_status(repo, batch_id, updated_by)
 
     return repo.get_ms_row_by_id(row_id) or row
@@ -3745,12 +4145,15 @@ async def handle_production_callback(update, context) -> bool:
         batch_no = _resolve_batch_no(repo, batch_id)
         viewer_user_id = str(user.get("user_id") or "").strip()
         if action == "ov":
-            text = _build_ms_batch_snapshot_overview_text(repo, batch_id, batch_no, user_role_name, viewer_user_id)
-            await _edit_ms_batch_tracker_message(
-                query,
-                text,
-                _build_ms_batch_overview_inline_keyboard(repo, batch_id, user_role_name, viewer_user_id),
+            text = _build_ms_batch_snapshot_overview_text(
+                repo,
+                batch_id,
+                batch_no,
+                user_role_name,
+                viewer_user_id,
+                user_independent=True,
             )
+            await _edit_ms_batch_tracker_message(query, text)
             return True
         if action == "vd":
             await _send_ms_batch_first_stage_detail_messages(query, context, batch_id)
@@ -3815,7 +4218,13 @@ async def handle_production_callback(update, context) -> bool:
                 if status != _MS_PENDING_CONFIRMATION:
                     await query.message.reply_text("This flow is not waiting for hand-off confirmation.")
                     return True
-                if not _role_matches(user_role_name, next_role):
+                if not _can_confirm_handoff(
+                    repo,
+                    row_fields,
+                    user_role_name,
+                    viewer_user_id=viewer_user_id,
+                    row_id=row_id,
+                ):
                     await query.message.reply_text("Only the next-stage supervisor can confirm this hand-off.")
                     return True
                 try:
@@ -3891,11 +4300,15 @@ async def handle_production_callback(update, context) -> bool:
             process_seq = _normalize_process_seq(fields)
             stage_name = str(fields.get("current_stage_name") or "").strip()
             current_role = _resolve_supervisor_role_for_stage(repo, process_seq, stage_name)
-            next_stage = str(fields.get("next_stage_name") or "").strip()
-            next_role = _resolve_supervisor_role_for_stage(repo, process_seq, next_stage) if next_stage else ""
 
             if row_status == _MS_PENDING_CONFIRMATION:
-                if not _role_matches(user_role_name, next_role):
+                if not _can_confirm_handoff(
+                    repo,
+                    fields,
+                    user_role_name,
+                    viewer_user_id=str(user.get("user_id") or "").strip(),
+                    row_id=record_id,
+                ):
                     await query.message.reply_text("Only the next-stage supervisor can confirm this handover.")
                     return True
                 try:
@@ -3922,14 +4335,17 @@ async def handle_production_callback(update, context) -> bool:
                 await query.message.reply_text("MS row not found.")
                 return True
             fields = row.get("fields", {})
-            process_seq = _normalize_process_seq(fields)
-            next_stage = str(fields.get("next_stage_name") or "").strip()
-            next_role = _resolve_supervisor_role_for_stage(repo, process_seq, next_stage) if next_stage else ""
             row_status = str(fields.get("current_status") or fields.get("status") or "").strip()
             if row_status != _MS_PENDING_CONFIRMATION:
                 await query.message.reply_text("This row is not waiting for confirmation.")
                 return True
-            if not _role_matches(user_role_name, next_role):
+            if not _can_confirm_handoff(
+                repo,
+                fields,
+                user_role_name,
+                viewer_user_id=str(user.get("user_id") or "").strip(),
+                row_id=record_id,
+            ):
                 await query.message.reply_text("Only the next-stage supervisor can confirm this handover.")
                 return True
             try:
@@ -4247,9 +4663,68 @@ async def handle_production_state_text(update, context, text: str) -> bool:
             await start_new_production_batch(update, context)
             return True
         if text == _YES:
-            await _create_batch_from_flow(update, context)
+            can_create_now = await _continue_batch_creation_actor_selection(update, context)
+            if can_create_now:
+                await _create_batch_from_flow(update, context)
             return True
         await _reply(update, "Select Yes or No.", [[_YES], [_NO], [BACK_LABEL]])
+        return True
+
+    if state == SELECTING_BATCH_OWNER_STATE:
+        if text == BACK_LABEL:
+            context.user_data["menu_state"] = CONFIRMING_BATCH_STATE
+            await _reply(update, _batch_summary_text(_get_flow(context)), [[_YES], [_NO], [BACK_LABEL]])
+            return True
+        selection = context.user_data.get("batch_owner_selection", {})
+        candidates = selection.get("candidates", [])
+        selected_numbers = _parse_number_tokens(text)
+        if len(selected_numbers) != 1:
+            await _reply(update, "Select one owner number from the list.")
+            return True
+        index = selected_numbers[0] - 1
+        if index < 0 or index >= len(candidates):
+            await _reply(update, "No valid owner selected.")
+            return True
+        owner = candidates[index]
+        flow = _get_flow(context)
+        flow["owner_user_ref"] = owner.get("costing_ref")
+        flow["owner_user_id"] = owner.get("user_id")
+        flow["owner_name"] = owner.get("name")
+        can_create_now = await _continue_batch_creation_actor_selection(update, context)
+        if can_create_now:
+            await _create_batch_from_flow(update, context)
+        return True
+
+    if state == SELECTING_BATCH_NOTIFIERS_STATE:
+        if text == BACK_LABEL:
+            flow = _get_flow(context)
+            if _is_production_manager(context) and not isinstance(flow.get("owner_user_ref"), int):
+                selection = context.user_data.get("batch_owner_selection", {})
+                await _show_batch_owner_selection(update, context, selection.get("candidates", []))
+            else:
+                context.user_data["menu_state"] = CONFIRMING_BATCH_STATE
+                await _reply(update, _batch_summary_text(flow), [[_YES], [_NO], [BACK_LABEL]])
+            return True
+        selection = context.user_data.get("batch_notifier_selection", {})
+        candidates = selection.get("candidates", [])
+        if str(text or "").strip() == "0":
+            _get_flow(context)["notifier_user_refs"] = []
+            await _create_batch_from_flow(update, context)
+            return True
+        selected_numbers = _parse_number_tokens(text)
+        if not selected_numbers:
+            await _reply(update, "Enter comma-separated notifier numbers, or 0 to skip.")
+            return True
+        selected_refs: list[int] = []
+        for number in selected_numbers:
+            index = number - 1
+            if index < 0 or index >= len(candidates):
+                continue
+            ref = candidates[index].get("costing_ref")
+            if isinstance(ref, int):
+                selected_refs.append(ref)
+        _get_flow(context)["notifier_user_refs"] = sorted(set(selected_refs))
+        await _create_batch_from_flow(update, context)
         return True
 
     if state == SELECTING_BATCH_TYPE_STATE:
@@ -5234,6 +5709,21 @@ async def handle_production_state_text(update, context, text: str) -> bool:
         user_role_name = repo.get_role_name_by_user_id(user.get("user_id", ""))
         updated_by = repo.get_costing_user_ref_by_user_id(user.get("user_id", ""))
 
+        selected_numbers = _parse_number_tokens(text)
+        if len(selected_numbers) == 1:
+            flow_number = selected_numbers[0]
+            payload = _resolve_ms_batch_flow_message_payload(repo, batch_id, flow_number)
+            if not payload:
+                total_flows = len(_ordered_ms_rows_for_batch(repo, batch_id))
+                if total_flows <= 0:
+                    await _reply(update, "No MS flows found for this batch.")
+                    return True
+                await _reply(update, f"Select a valid flow number between 1 and {total_flows}.")
+                return True
+            message, reply_markup = payload
+            await update.effective_message.reply_text(message, reply_markup=reply_markup)
+            return True
+
         if text == _MS_BATCH_ACTION_SUMMARY:
             await _show_ms_batch_tracker_overview(update, context, batch_id, batch_no)
             await _show_my_ms_batch_action_menu(update, context, batch_id, batch_no, source_state=source_state)
@@ -5522,6 +6012,7 @@ async def handle_production_state_text(update, context, text: str) -> bool:
                 updated_by,
                 user_role_name,
                 remarks_text,
+                viewer_user_id=str(user.get("user_id") or "").strip(),
             )
         except Exception:
             rejected = False
@@ -5626,4 +6117,5 @@ async def handle_production_state_text(update, context, text: str) -> bool:
         return False
 
     return False
+
 
