@@ -269,6 +269,9 @@ def render_html(rows: list[dict]) -> str:
       const rowsInfo = document.getElementById("rowsInfo");
       const rows = Array.from(document.querySelectorAll(".msg"));
       const copyStateByButton = new Map();
+      const storageKeyBase = "pulse_outbox_preview_filters::" + window.location.pathname;
+      const userFilterKey = storageKeyBase + "::user";
+      const sessionFilterKey = storageKeyBase + "::session";
 
       function copyToClipboard(text) {{
         return navigator.clipboard?.writeText(text)
@@ -317,6 +320,12 @@ def render_html(rows: list[dict]) -> str:
       function applyFilter() {{
         const selectedUser = filter.value;
         const selectedSession = sessionFilter.value;
+        try {{
+          window.localStorage.setItem(userFilterKey, selectedUser);
+          window.localStorage.setItem(sessionFilterKey, selectedSession);
+        }} catch (err) {{
+          // Ignore storage errors (private mode, disabled storage, etc.).
+        }}
         let visible = 0;
         for (const row of rows) {{
           const user = row.getAttribute("data-user") || "";
@@ -335,6 +344,20 @@ def render_html(rows: list[dict]) -> str:
       document.querySelectorAll(".btn").forEach(btn => {{
         btn.addEventListener("click", handleButtonCopy);
       }});
+
+      try {{
+        const savedUser = window.localStorage.getItem(userFilterKey);
+        const savedSession = window.localStorage.getItem(sessionFilterKey);
+        if (savedUser && Array.from(filter.options).some(opt => opt.value === savedUser)) {{
+          filter.value = savedUser;
+        }}
+        if (savedSession && Array.from(sessionFilter.options).some(opt => opt.value === savedSession)) {{
+          sessionFilter.value = savedSession;
+        }}
+      }} catch (err) {{
+        // Ignore storage errors and continue with defaults.
+      }}
+
       applyFilter();
     }})();
   </script>

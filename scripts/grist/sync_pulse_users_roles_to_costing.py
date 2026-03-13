@@ -191,19 +191,7 @@ def _resolve_user_schema(columns: set[str]) -> UserSchema:
             role_col=role_col,
             source_col=source_col,
         )
-    if "user_code" in columns and "user_name" in columns:
-        active_col = "active" if "active" in columns else None
-        role_col = "role_id" if "role_id" in columns else None
-        source_col = "source_system" if "source_system" in columns else None
-        return UserSchema(
-            key_col="user_code",
-            name_col="user_name",
-            telegram_col=None,
-            active_col=active_col,
-            role_col=role_col,
-            source_col=source_col,
-        )
-    raise ValueError("Users table schema not supported. Expected User_ID/Name or user_code/user_name.")
+    raise ValueError("Users table schema not supported. Expected User_ID/Name columns.")
 
 
 def _build_role_payload(fields: dict, schema: RoleSchema) -> dict:
@@ -510,7 +498,7 @@ def main() -> None:
     users_table = _resolve_table_name(
         costing_client,
         args.costing_users_table,
-        candidates=("Users", "UserMaster_Mirror"),
+        candidates=("Users",),
         label="users",
     )
 

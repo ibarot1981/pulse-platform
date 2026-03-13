@@ -128,6 +128,44 @@ def test_dispatch_inbox_row_routes_callback(monkeypatch):
     assert calls["callback_router"] == 1
 
 
+def test_process_pending_once_skips_already_processed_rows(monkeypatch):
+    calls = {"dispatch_ids": [], "mark_processed": [], "log_entries": []}
+
+    async def _fake_dispatch(runtime, row):
+        calls["dispatch_ids"].append(int(row.get("id") or 0))
+
+    monkeypatch.setattr("pulse.testing.harness._dispatch_inbox_row", _fake_dispatch)
+
+    class _Runtime:
+        def fetch_pending_inbox_rows(self):
+            return [
+                {
+                    "id": 11,
+                    "fields": {"session_id": "s1", "actor_user_id": "u1"},
+                },
+                {
+                    "id": 12,
+                    "fields": {"session_id": "s1", "actor_user_id": "u1"},
+                },
+            ]
+
+        def is_inbox_row_processed(self, inbox_id):
+            return int(inbox_id) == 11
+
+        def mark_inbox_processed(self, inbox_id, error):
+            calls["mark_processed"].append((int(inbox_id), str(error)))
+
+        def log_run(self, level, message, session_id="", actor_user_id="", inbox_id=None, details=""):
+            calls["log_entries"].append((str(level), int(inbox_id or 0), str(message)))
+
+    processed = harness.process_pending_once(_Runtime())
+
+    assert processed == 2
+    assert calls["dispatch_ids"] == [12]
+    assert calls["mark_processed"] == [(12, "")]
+    assert calls["log_entries"] == [("INFO", 12, "Processed inbox row")]
+
+
 def test_main_uses_test_loop_in_test_mode(monkeypatch):
     calls = {"test_loop": 0}
 

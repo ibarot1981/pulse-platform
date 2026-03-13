@@ -131,19 +131,9 @@ def _ensure_schema(client: GristClient) -> None:
     )
     _ensure_table(
         client,
-        "UserMaster_Mirror",
-        [
-            {"id": "user_code", "type": "Text"},
-            {"id": "user_name", "type": "Text"},
-            {"id": "active", "type": "Bool"},
-            {"id": "source_system", "type": "Text"},
-        ],
-    )
-    _ensure_table(
-        client,
         "UserRoleAssignment_Mirror",
         [
-            {"id": "user_id", "type": "Ref:UserMaster_Mirror"},
+            {"id": "user_id", "type": "Ref:Users"},
             {"id": "role_id", "type": "Ref:RoleMaster_Mirror"},
             {"id": "scope", "type": "Text"},
             {"id": "active", "type": "Bool"},
@@ -195,7 +185,7 @@ def _ensure_schema(client: GristClient) -> None:
         ],
     )
     # Ensure column types remain correct on reruns.
-    _ensure_column(client, "UserRoleAssignment_Mirror", "user_id", "Ref:UserMaster_Mirror")
+    _ensure_column(client, "UserRoleAssignment_Mirror", "user_id", "Ref:Users")
     _ensure_column(client, "UserRoleAssignment_Mirror", "role_id", "Ref:RoleMaster_Mirror")
     _ensure_column(client, "StageMaster", "default_role_id", "Ref:RoleMaster_Mirror")
     _ensure_column(client, "ProcessStage", "process_seq_id", "Ref:ProcessMaster")
@@ -226,21 +216,16 @@ def _sync_role_user_mirrors(client: GristClient) -> tuple[dict[str, int], dict[s
         role_ref_to_code[row_id] = role_code
     _upsert_records(client, "RoleMaster_Mirror", "role_code", roles)
 
-    users = []
-    for row in pulse_users:
-        row_id = row.get("id")
-        if not isinstance(row_id, int):
-            continue
-        fields = row.get("fields", {})
-        user_code = str(fields.get("User_ID") or f"USER_{row_id}").strip()
-        user_name = str(fields.get("Name") or "").strip()
-        if not user_code or not user_name:
-            continue
-        users.append({"user_code": user_code, "user_name": user_name, "active": bool(fields.get("Active", True)), "source_system": "Pulse"})
-    _upsert_records(client, "UserMaster_Mirror", "user_code", users)
-
     role_ids = _id_map_by_field(client, "RoleMaster_Mirror", "role_code")
-    user_ids = _id_map_by_field(client, "UserMaster_Mirror", "user_code")
+    users_table_rows = client.get_records("Users")
+    user_ids: dict[str, int] = {}
+    for row in users_table_rows:
+        rec_id = row.get("id")
+        if not isinstance(rec_id, int):
+            continue
+        user_code = str(row.get("fields", {}).get("User_ID") or "").strip()
+        if user_code:
+            user_ids[user_code] = rec_id
 
     existing_pairs = set()
     for row in client.get_records("UserRoleAssignment_Mirror"):
@@ -412,7 +397,12 @@ def _seed_process_remarks_from_summary(client: GristClient) -> None:
 
 
 def _apply_formulas_and_display(client: GristClient) -> None:
-    _set_formula("UserRoleAssignment_Mirror", "user_name", "$user_id.user_name if $user_id else ''", "Text")
+    _set_formula(
+        "UserRoleAssignment_Mirror",
+        "user_name",
+        "u = $user_id\nif not u:\n  return ''\nfor attr in ('Name', 'name', 'User_Name', 'UserName', 'Full_Name', 'Employee_Name', 'User_ID'):\n  value = getattr(u, attr, '')\n  if value:\n    return str(value)\nreturn ''",
+        "Text",
+    )
     _set_formula("UserRoleAssignment_Mirror", "role_name", "$role_id.role_name if $role_id else ''", "Text")
     _set_formula("StageMaster", "default_role_name", "$default_role_id.role_name if $default_role_id else ''", "Text")
 
@@ -442,12 +432,12 @@ def _apply_formulas_and_display(client: GristClient) -> None:
     _set_formula(
         "ProcessStage",
         "suggested_supervisors",
-        "if not $resolved_role_id:\n  return ''\nassignments = UserRoleAssignment_Mirror.lookupRecords(role_id=$resolved_role_id, active=True)\nusers = sorted(set([a.user_id.user_name for a in assignments if a.user_id and a.user_id.user_name]))\nreturn ', '.join(users)",
+        "if not $resolved_role_id:\n  return ''\nassignments = UserRoleAssignment_Mirror.lookupRecords(role_id=$resolved_role_id, active=True)\nusers = set()\nfor a in assignments:\n  u = a.user_id\n  if not u:\n    continue\n  name = ''\n  for attr in ('Name', 'name', 'User_Name', 'UserName', 'Full_Name', 'Employee_Name', 'User_ID'):\n    value = getattr(u, attr, '')\n    if value:\n      name = str(value).strip()\n      break\n  if name:\n    users.add(name)\nreturn ', '.join(sorted(users))",
         "Text",
     )
     _set_formula("ProcessStage", "stage_label", "\"%s. %s\" % ($seq_no, $stage_name) if $stage_name else ''", "Text")
 
-    _set_visible_col(client, "UserRoleAssignment_Mirror", "user_id", "UserMaster_Mirror", "user_name")
+    _set_visible_col(client, "UserRoleAssignment_Mirror", "user_id", "Users", "Name")
     _set_visible_col(client, "UserRoleAssignment_Mirror", "role_id", "RoleMaster_Mirror", "role_name")
     _set_visible_col(client, "StageMaster", "default_role_id", "RoleMaster_Mirror", "role_name")
     _set_visible_col(client, "ProcessStage", "process_seq_id", "ProcessMaster", "display_label")

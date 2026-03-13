@@ -57,11 +57,26 @@ def _get_event_recipient_mode(event_record: dict | None) -> str:
 
 
 def _resolve_owner_user_id(context: dict | None) -> str:
+    actors = _resolve_batch_actor_user_ids(context)
+    return actors.get("owner", "")
+
+
+def _extract_user_id_from_costing_ref(raw_value, costing_user_id_by_rec_id: dict[int, str]) -> str:
+    value = _normalize_ref_value(raw_value)
+    if isinstance(value, int):
+        return costing_user_id_by_rec_id.get(value, "")
+    text = _to_str(value).strip()
+    if text.isdigit():
+        return costing_user_id_by_rec_id.get(int(text), "")
+    return text
+
+
+def _resolve_batch_actor_user_ids(context: dict | None) -> dict[str, str | list[str]]:
     if not context:
-        return ""
+        return {"owner": "", "creator": "", "notifiers": []}
     batch_id = context.get("batch_id")
     if not isinstance(batch_id, int):
-        return ""
+        return {"owner": "", "creator": "", "notifiers": []}
 
     masters = costing_client.get_records("ProductBatchMaster")
     costing_users = costing_client.get_records("Users")
@@ -73,14 +88,29 @@ def _resolve_owner_user_id(context: dict | None) -> str:
     for record in masters:
         if record.get("id") != batch_id:
             continue
-        created_by_value = _normalize_ref_value(record.get("fields", {}).get("created_by"))
-        if isinstance(created_by_value, int):
-            return costing_user_id_by_rec_id.get(created_by_value, "")
-        created_by_text = _to_str(created_by_value).strip()
-        if created_by_text.isdigit():
-            return costing_user_id_by_rec_id.get(int(created_by_text), "")
-        return created_by_text
-    return ""
+        fields = record.get("fields", {})
+        creator_user_id = _extract_user_id_from_costing_ref(fields.get("created_by"), costing_user_id_by_rec_id)
+        owner_user_id = _extract_user_id_from_costing_ref(fields.get("owner_user"), costing_user_id_by_rec_id) or creator_user_id
+
+        notifier_ids: list[str] = []
+        notifiers_raw = fields.get("notifier_users")
+        if isinstance(notifiers_raw, list):
+            items = notifiers_raw[1:] if notifiers_raw and notifiers_raw[0] == "L" else notifiers_raw
+            for item in items:
+                user_id = _extract_user_id_from_costing_ref(item, costing_user_id_by_rec_id)
+                if user_id:
+                    notifier_ids.append(user_id)
+        elif notifiers_raw not in (None, "", 0, "0"):
+            user_id = _extract_user_id_from_costing_ref(notifiers_raw, costing_user_id_by_rec_id)
+            if user_id:
+                notifier_ids.append(user_id)
+
+        return {
+            "owner": owner_user_id,
+            "creator": creator_user_id,
+            "notifiers": sorted(set(notifier_ids)),
+        }
+    return {"owner": "", "creator": "", "notifiers": []}
 
 
 def _add_user_if_valid(
@@ -122,6 +152,7 @@ def _get_subscription_recipients(
     event_type: str,
     event_record: dict | None,
     users: list[dict],
+    role_ids_by_user_record: dict[int, set[int]] | None = None,
     role_name_by_id: dict[int, str] | None = None,
     role_id_by_id: dict[int, str] | None = None,
 ) -> list[dict]:
@@ -169,8 +200,14 @@ def _get_subscription_recipients(
 
         for user in users:
             user_fields = user.get("fields", {})
+            role_ids = set()
+            user_rec_id = user.get("id")
+            if isinstance(user_rec_id, int) and role_ids_by_user_record:
+                role_ids.update(role_ids_by_user_record.get(user_rec_id, set()))
             user_role = _normalize_ref_value(user_fields.get("Role"))
-            if user_role != role_value:
+            if isinstance(user_role, int):
+                role_ids.add(user_role)
+            if role_value not in role_ids:
                 continue
             _add_user_if_valid(
                 user,
@@ -186,6 +223,7 @@ def _get_subscription_recipients(
 def _get_context_role_recipients(
     context: dict | None,
     users: list[dict],
+    role_ids_by_user_record: dict[int, set[int]] | None = None,
     role_name_by_id: dict[int, str] | None = None,
     role_id_by_id: dict[int, str] | None = None,
 ) -> list[dict]:
@@ -208,11 +246,45 @@ def _get_context_role_recipients(
     seen_telegram_ids: set[str] = set()
     for user in users:
         user_fields = user.get("fields", {})
+        user_role_ids: set[int] = set()
+        user_rec_id = user.get("id")
+        if isinstance(user_rec_id, int) and role_ids_by_user_record:
+            user_role_ids.update(role_ids_by_user_record.get(user_rec_id, set()))
         user_role = _normalize_ref_value(user_fields.get("Role"))
-        if user_role not in role_ids:
+        if isinstance(user_role, int):
+            user_role_ids.add(user_role)
+        if not (user_role_ids & role_ids):
             continue
         _add_user_if_valid(
             user,
+            recipients,
+            seen_telegram_ids,
+            role_name_by_id=role_name_by_id,
+            role_id_by_id=role_id_by_id,
+        )
+    return recipients
+
+
+def _get_context_user_recipients(
+    context: dict | None,
+    users: list[dict],
+    role_name_by_id: dict[int, str] | None = None,
+    role_id_by_id: dict[int, str] | None = None,
+) -> list[dict]:
+    if not context:
+        return []
+    user_ids = context.get("recipient_user_ids")
+    if not isinstance(user_ids, list) or not user_ids:
+        return []
+    targets = {str(uid).strip() for uid in user_ids if str(uid).strip()}
+    if not targets:
+        return []
+    users_by_user_id, _ = _build_users_index(users)
+    recipients: list[dict] = []
+    seen_telegram_ids: set[str] = set()
+    for user_id in sorted(targets):
+        _add_user_if_valid(
+            users_by_user_id.get(user_id),
             recipients,
             seen_telegram_ids,
             role_name_by_id=role_name_by_id,
@@ -236,6 +308,21 @@ def get_subscribers(event_type: str, context: dict | None = None) -> list[dict]:
         for row in roles
         if isinstance(row.get("id"), int)
     }
+    role_ids_by_user_record: dict[int, set[int]] = {}
+    try:
+        assignments = pulse_client.get_records("UserRoleAssignment")
+    except Exception:
+        assignments = []
+    for row in assignments:
+        fields = row.get("fields", {})
+        if not bool(fields.get("Active", True)):
+            continue
+        user_ref = _normalize_ref_value(fields.get("User"))
+        role_ref = _normalize_ref_value(fields.get("Role"))
+        if not isinstance(user_ref, int) or not isinstance(role_ref, int):
+            continue
+        role_ids_by_user_record.setdefault(user_ref, set()).add(role_ref)
+
     event_record = _find_event_record(events, event_type)
     recipient_mode = _get_event_recipient_mode(event_record)
 
@@ -258,6 +345,7 @@ def get_subscribers(event_type: str, context: dict | None = None) -> list[dict]:
             event_type,
             event_record,
             users,
+            role_ids_by_user_record=role_ids_by_user_record,
             role_name_by_id=role_name_by_id,
             role_id_by_id=role_id_by_id,
         )
@@ -271,6 +359,7 @@ def get_subscribers(event_type: str, context: dict | None = None) -> list[dict]:
     context_role_recipients = _get_context_role_recipients(
         context,
         users,
+        role_ids_by_user_record=role_ids_by_user_record,
         role_name_by_id=role_name_by_id,
         role_id_by_id=role_id_by_id,
     )
@@ -280,5 +369,35 @@ def get_subscribers(event_type: str, context: dict | None = None) -> list[dict]:
             continue
         recipients.append(user)
         seen_telegram_ids.add(telegram_id)
+
+    context_user_recipients = _get_context_user_recipients(
+        context,
+        users,
+        role_name_by_id=role_name_by_id,
+        role_id_by_id=role_id_by_id,
+    )
+    for user in context_user_recipients:
+        telegram_id = _to_str(user.get("telegram_id"))
+        if not telegram_id or telegram_id in seen_telegram_ids:
+            continue
+        recipients.append(user)
+        seen_telegram_ids.add(telegram_id)
+
+    actors = _resolve_batch_actor_user_ids(context)
+    actor_user_ids = [
+        _to_str(actors.get("owner")).strip(),
+        _to_str(actors.get("creator")).strip(),
+        *[_to_str(user_id).strip() for user_id in actors.get("notifiers", []) if _to_str(user_id).strip()],
+    ]
+    users_by_user_id, _ = _build_users_index(users)
+    for actor_user_id in actor_user_ids:
+        actor = users_by_user_id.get(actor_user_id)
+        _add_user_if_valid(
+            actor,
+            recipients,
+            seen_telegram_ids,
+            role_name_by_id=role_name_by_id,
+            role_id_by_id=role_id_by_id,
+        )
 
     return recipients

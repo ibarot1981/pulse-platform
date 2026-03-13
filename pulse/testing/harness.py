@@ -86,6 +86,20 @@ class TestRuntimeClient:
         pending.sort(key=lambda item: int(item.get("id") or 0))
         return pending
 
+    def is_inbox_row_processed(self, inbox_id: int) -> bool:
+        if inbox_id <= 0:
+            return True
+        try:
+            rows = self.client.get_records(TEST_INBOX_TABLE)
+        except Exception:
+            return False
+        for row in rows:
+            if int(row.get("id") or 0) != inbox_id:
+                continue
+            fields = row.get("fields", {})
+            return bool(fields.get("processed", False))
+        return True
+
     def mark_inbox_processed(self, inbox_id: int, error: str = "") -> None:
         self.client.patch_record(
             TEST_INBOX_TABLE,
@@ -454,11 +468,14 @@ def run_test_runtime_loop() -> None:
 def process_pending_once(runtime: TestRuntimeClient | None = None) -> int:
     runtime_client = runtime or TestRuntimeClient()
     rows = runtime_client.fetch_pending_inbox_rows()
+    is_row_processed = getattr(runtime_client, "is_inbox_row_processed", None)
     for row in rows:
         inbox_id = int(row.get("id") or 0)
         fields = row.get("fields", {})
         session_id = str(fields.get("session_id") or "")
         actor_user_id = str(fields.get("actor_user_id") or "")
+        if callable(is_row_processed) and is_row_processed(inbox_id):
+            continue
         try:
             asyncio.run(_dispatch_inbox_row(runtime_client, row))
             runtime_client.mark_inbox_processed(inbox_id, "")

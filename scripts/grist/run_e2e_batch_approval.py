@@ -247,6 +247,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--manager", default="", help="Test user Telegram ID for Production Manager")
     parser.add_argument("--model-index", type=int, default=1)
     parser.add_argument("--qty", type=int, default=32)
+    parser.add_argument(
+        "--notifiers",
+        default="0",
+        help="Notifier selection after confirmation (e.g. 0 to skip, or 1,2).",
+    )
     parser.add_argument("--refresh-session", action="store_true", help="Use a fresh unique session id")
     parser.add_argument("--skip-open", action="store_true", help="Skip opening approval button before approve")
     parser.add_argument("--render", action="store_true", help="Render outbox preview at the end")
@@ -274,6 +279,7 @@ def main() -> None:
     _run_push(supervisor_id, session_id, text=str(args.qty))
     _run_push(supervisor_id, session_id, text="New Complete Batch (M-C-S)")
     _run_push(supervisor_id, session_id, text="Yes")
+    _run_push(supervisor_id, session_id, text=str(args.notifiers))
 
     batch_id = _max_batch_id(batch_client)
     batch_no = None

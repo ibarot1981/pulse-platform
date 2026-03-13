@@ -16,6 +16,8 @@ class ProductionRepo:
         "include_cnc": "Bool",
         "include_store": "Bool",
         "created_by": "Ref:Users",
+        "owner_user": "Ref:Users",
+        "notifier_users": "RefList:Users",
         "created_date": "DateTime",
         "start_date": "DateTime",
         "scheduled_date": "DateTime",
@@ -568,6 +570,77 @@ class ProductionRepo:
     def get_roles(self) -> list[dict]:
         return self.pulse_client.get_records("Roles")
 
+    def get_user_role_assignments(self) -> list[dict]:
+        try:
+            return self.pulse_client.get_records("UserRoleAssignment")
+        except Exception:
+            return []
+
+    def _role_name_by_id(self) -> dict[int, str]:
+        return {
+            row.get("id"): str(row.get("fields", {}).get("Role_Name") or "").strip()
+            for row in self.get_roles()
+            if isinstance(row.get("id"), int)
+        }
+
+    def _user_record_by_user_id(self) -> dict[str, dict]:
+        mapping: dict[str, dict] = {}
+        for user in self.get_users():
+            fields = user.get("fields", {})
+            user_id = str(fields.get("User_ID") or "").strip()
+            if user_id:
+                mapping[user_id] = user
+            telegram_id = str(fields.get("Telegram_ID") or "").strip()
+            if telegram_id and telegram_id not in mapping:
+                mapping[telegram_id] = user
+        return mapping
+
+    def get_role_names_by_user_id(self, user_id: str) -> list[str]:
+        target = str(user_id or "").strip()
+        if not target:
+            return []
+
+        role_name_by_id = self._role_name_by_id()
+        user_by_user_id = self._user_record_by_user_id()
+        target_user = user_by_user_id.get(target)
+        if not target_user:
+            return []
+
+        role_names: list[str] = []
+        seen: set[str] = set()
+
+        # Default/legacy single-role source from Users.Role.
+        user_role = self._normalize_ref(target_user.get("fields", {}).get("Role"))
+        if isinstance(user_role, int):
+            role_name = str(role_name_by_id.get(user_role) or "").strip()
+            if role_name and role_name not in seen:
+                seen.add(role_name)
+                role_names.append(role_name)
+
+        # Preferred multi-role source (when present).
+        user_rec_id = target_user.get("id")
+        for row in self.get_user_role_assignments():
+            fields = row.get("fields", {})
+            if not bool(fields.get("Active", True)):
+                continue
+            user_ref = self._normalize_ref(fields.get("User"))
+            if isinstance(user_ref, int) and isinstance(user_rec_id, int):
+                if user_ref != user_rec_id:
+                    continue
+            else:
+                user_ref_text = str(user_ref or "").strip()
+                if user_ref_text not in {target, str(user_rec_id or "").strip()}:
+                    continue
+            role_ref = self._normalize_ref(fields.get("Role"))
+            if not isinstance(role_ref, int):
+                continue
+            role_name = str(role_name_by_id.get(role_ref) or "").strip()
+            if role_name and role_name not in seen:
+                seen.add(role_name)
+                role_names.append(role_name)
+
+        return role_names
+
     def get_telegram_by_user_id(self, user_id: str) -> str | None:
         users = self.get_users()
         for user in users:
@@ -594,39 +667,25 @@ class ProductionRepo:
     def get_active_users_by_role_names(self, role_names: list[str]) -> list[dict]:
         if not role_names:
             return []
-        roles = self.get_roles()
-        role_ids = {r.get("id") for r in roles if r.get("fields", {}).get("Role_Name") in role_names}
+        target = {str(name or "").strip() for name in role_names if str(name or "").strip()}
+        if not target:
+            return []
         users = self.get_users()
         result = []
         for user in users:
             fields = user.get("fields", {})
             if not fields.get("Active"):
                 continue
-            role_ref = self._normalize_ref(fields.get("Role"))
-            if role_ref not in role_ids:
+            user_id = str(fields.get("User_ID") or "").strip()
+            user_roles = set(self.get_role_names_by_user_id(user_id))
+            if not (user_roles & target):
                 continue
             result.append(user)
         return result
 
     def get_role_name_by_user_id(self, user_id: str) -> str:
-        users = self.get_users()
-        roles = self.get_roles()
-        role_name_by_id = {r.get("id"): r.get("fields", {}).get("Role_Name") for r in roles}
-        target = str(user_id or "").strip()
-        if not target:
-            return ""
-
-        for user in users:
-            fields = user.get("fields", {})
-            pulse_user_id = str(fields.get("User_ID") or "").strip()
-            telegram_id = str(fields.get("Telegram_ID") or "").strip()
-            if target not in {pulse_user_id, telegram_id}:
-                continue
-            role_ref = self._normalize_ref(fields.get("Role"))
-            if not role_ref:
-                return ""
-            return str(role_name_by_id.get(role_ref) or "")
-        return ""
+        roles = self.get_role_names_by_user_id(user_id)
+        return "|".join(roles)
 
     def add_lifecycle_history(self, batch_id: int, stage: str, updated_by, remarks: str = "") -> None:
         self.add_status_history(batch_id, "Master", batch_id, "", stage, updated_by, remarks)
