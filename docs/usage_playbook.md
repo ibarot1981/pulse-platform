@@ -267,7 +267,7 @@ These are event IDs currently dispatched by application workflows/reminders.
   - `StageMaster` (default role per stage name)
 - Role/user mirror tables (synced from Pulse):
   - `RoleMaster_Mirror`
-  - `UserMaster_Mirror`
+  - `Users` (Costing mirror of Pulse users)
   - `UserRoleAssignment_Mirror`
 - Batch-level cut list attachment fields (master table):
   - `ProductBatchMaster.ms_cutlist_pdf`
@@ -336,17 +336,12 @@ Tables created in Costing for this requirement:
 - Data source: sync script (`scripts/grist/apply_process_seq_phase1.py`).
 - Do not maintain manually except emergency correction.
 
-5. `UserMaster_Mirror`
-- Purpose: Mirror of Pulse `Users`.
-- Data source: sync script (`scripts/grist/apply_process_seq_phase1.py`).
-- Do not maintain manually except emergency correction.
-
-6. `UserRoleAssignment_Mirror`
+5. `UserRoleAssignment_Mirror`
 - Purpose: User-role mapping used for supervisor suggestions.
 - Data source in phase 1: derived from Pulse `Users.Role` (single role per user).
 - Enter manually only if temporary override is needed before Pulse-side update.
 
-7. `ProcessMaster.process_remarks` (column)
+6. `ProcessMaster.process_remarks` (column)
 - Purpose: Remarks shown in `ProductPartMSList.Process_Seq_Remarks`.
 - Enter manually in `ProcessMaster`:
   - `process_remarks`
@@ -444,6 +439,7 @@ Use this to simulate:
 
 - `/start -> Manage Production -> My MS Jobs`
 - Optional immediate view selection (for example `View By Batch No`)
+- Optional batch auto-selection by batch number (`--batch-no`) when using `View By Batch No`
 - Optional render refresh
 
 Examples:
@@ -451,9 +447,15 @@ Examples:
 ```powershell
 .\venv\Scripts\python.exe scripts/grist/run_my_ms_jobs_view.py --actor 8492411029 --refresh-session --render
 .\venv\Scripts\python.exe scripts/grist/run_my_ms_jobs_view.py --actor 8492411029 --refresh-session --view "View By Batch No" --render
+.\venv\Scripts\python.exe scripts/grist/run_my_ms_jobs_view.py --actor 8492411029 --refresh-session --batch-no "MAR26-S1KHFL-BASE-MCS-001" --render
 .\venv\Scripts\python.exe scripts/grist/run_my_ms_jobs_view.py --actor 8492411029 --refresh-session --view "View Created By" --render
 .\venv\Scripts\python.exe scripts/grist/run_my_ms_jobs_view.py --actor 8492411029 --refresh-session --view "View By Next Stage" --render
 ```
+
+Notes:
+
+- If `--batch-no` is passed without `--view`, the runner automatically uses `View By Batch No`.
+- The runner reads the `Select Batch No:` options and submits the matching serial number automatically (including moving to next pages if needed).
 
 ### K6) Preview + outbox filtering
 
