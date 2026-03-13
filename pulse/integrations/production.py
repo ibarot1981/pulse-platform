@@ -916,6 +916,28 @@ def _stage_chain_tokens(stages: list[str], current_stage_index: int, status: str
     return tokens
 
 
+def _compact_process_label(label: str) -> str:
+    text = str(label or "").strip()
+    if not text:
+        return ""
+    first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    target = first_line or text
+    if "|" in target:
+        return target.split("|", 1)[0].strip()
+    return target
+
+
+def _completed_stage_count(stages: list[str], current_stage_index: int, status: str) -> int:
+    if not stages:
+        return 0
+    status_value = str(status or "").strip()
+    if _is_ms_row_completed_status(status_value):
+        return len(stages)
+    if status_value == _MS_PENDING_CONFIRMATION:
+        return min(current_stage_index + 1, len(stages))
+    return min(max(current_stage_index, 0), len(stages))
+
+
 def _first_valid_datetime(*values) -> datetime | None:
     for value in values:
         parsed = _parse_iso_datetime(value)
@@ -979,6 +1001,7 @@ def _build_ms_batch_snapshot_overview_text(
     pending_count = 0
     handoff_pending_count = 0
     flow_lines: list[str] = []
+    total_rows = len(rows)
     for idx, row in enumerate(rows, start=1):
         fields = row.get("fields", {})
         process_seq = _normalize_process_seq(fields)
@@ -997,9 +1020,14 @@ def _build_ms_batch_snapshot_overview_text(
         else:
             pending_count += 1
 
-        process_label = repo.get_process_display_label(process_seq) or f"Flow {idx}"
+        raw_process_label = repo.get_process_display_label(process_seq) or f"Flow {idx}"
+        process_label = _compact_process_label(raw_process_label) or f"Flow {idx}"
+        completed_stages = _completed_stage_count(stages, current_stage_index, status)
         flow_tokens = _stage_chain_tokens(stages, current_stage_index, status)
-        flow_lines.append(f"{idx}. {process_label}: " + " -> ".join(flow_tokens))
+        flow_lines.append(f"{idx}. {process_label}")
+        flow_lines.append(f"{completed_stages}/{len(stages)} stages: " + " -> ".join(flow_tokens))
+        if idx < total_rows:
+            flow_lines.append("")
 
     lines = [
         "Batch Overview",

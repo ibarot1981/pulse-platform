@@ -442,6 +442,71 @@ class MenuStateRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Flows: 4", manager_text)
         self.assertIn("PRS-PJ-PROD", manager_text)
 
+    def test_batch_snapshot_uses_compact_label_and_done_total_stage_format(self):
+        batch_id = 101
+        batch_no = "MAR26-S1KHFL-BASE-MCS-001"
+
+        class _FakeRepo:
+            def list_ms_rows_for_batch(self, target_batch_id: int):
+                if target_batch_id != batch_id:
+                    return []
+                return [
+                    {
+                        "id": 1,
+                        "fields": {
+                            "batch_id": batch_id,
+                            "process_seq": "PLS-PJ-PROD",
+                            "current_stage_name": "Press Job",
+                            "current_status": "Press Job Pending",
+                        },
+                    },
+                    {
+                        "id": 2,
+                        "fields": {
+                            "batch_id": batch_id,
+                            "process_seq": "PRS-PROD",
+                            "current_stage_name": "Press Cutting",
+                            "current_status": "Press Cutting Pending",
+                        },
+                    },
+                ]
+
+            def get_master_by_id(self, target_batch_id: int):
+                if target_batch_id != batch_id:
+                    return None
+                return {"id": batch_id, "fields": {"created_by": 1}}
+
+            def get_process_stage_names(self, process_seq):
+                stage_map = {
+                    "PLS-PJ-PROD": ["Plasma Cutting", "Press Job", "Production"],
+                    "PRS-PROD": ["Press Cutting", "Production"],
+                }
+                return stage_map.get(process_seq, [])
+
+            def get_process_display_label(self, process_seq):
+                labels = {
+                    "PLS-PJ-PROD": "PLS-PJ-PROD | Plasma + Press Job + Production | V1 | 3 stages",
+                    "PRS-PROD": "PRS-PROD | Press + Production | V1 | 2 stages",
+                }
+                return labels.get(process_seq, str(process_seq or ""))
+
+            def get_stage_role_for_process_stage(self, process_seq, stage_name: str) -> str:
+                return ""
+
+        text = production._build_ms_batch_snapshot_overview_text(
+            _FakeRepo(),
+            batch_id,
+            batch_no,
+            user_independent=True,
+        )
+        self.assertIn("1. PLS-PJ-PROD", text)
+        self.assertIn("1/3 stages:", text)
+        self.assertIn("2. PRS-PROD", text)
+        self.assertIn("0/2 stages:", text)
+        self.assertNotIn("Plasma + Press Job + Production", text)
+        self.assertNotIn("Press + Production", text)
+        self.assertNotIn("V1", text)
+
     def test_apply_ms_jobs_filter_includes_all_owner_rows_for_non_privileged_views(self):
         all_rows = [
             {"id": 1, "fields": {"batch_id": 10, "next_stage_name": "Production", "current_stage_name": "Plasma Cutting"}},
