@@ -79,3 +79,15 @@ commands to initialize test doc,
 commands to run in TEST mode,
 known limitations.
 Do not ask me to manually create tables; implement scripts that create/ensure them automatically using provided env configuration.
+
+
+##########
+In Manage Production - My MS Jobs
+View By Batch No, the Batch Overview message is shown.
+However, two things needs to be done here :
+1. Should be filtered for only those flows where the supervisor has a pending stage.
+2. For the list of stages shown, give him a button to mark the stage as done.
+
+Keep this same view formatting consistent for list of entries to be shown for, except the list will be ordered by (Batches or Created By or State selected) :
+view By Created By
+and view by Next Stage

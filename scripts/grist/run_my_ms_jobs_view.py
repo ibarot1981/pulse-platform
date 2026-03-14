@@ -24,6 +24,7 @@ PUSH_SCRIPT_PATH = REPO_ROOT / "scripts" / "grist" / "push_test_inbox.py"
 RENDER_SCRIPT_PATH = REPO_ROOT / "scripts" / "grist" / "render_test_outbox_preview.py"
 VIEW_BY_BATCH_NO = "View By Batch No"
 SELECT_BATCH_HEADER = "Select Batch No:"
+NO_BATCH_ENTRIES_TEXT = "No batch entries available for your MS jobs."
 
 load_dotenv(REPO_ROOT / ".env")
 
@@ -135,6 +136,11 @@ def _resolve_batch_selector_serial(client: GristClient, actor: str, session: str
         fields = latest.get("fields", {})
         message_text = str(fields.get("message_text") or "")
         labels = _parse_button_labels(str(fields.get("buttons_json") or ""))
+        if NO_BATCH_ENTRIES_TEXT.casefold() in message_text.casefold():
+            raise RuntimeError(
+                f"Actor {actor} has no batch entries in 'My MS Jobs' for session '{session}', "
+                "so batch selection is not available."
+            )
         if SELECT_BATCH_HEADER in message_text:
             serial = _extract_batch_serial_number(message_text, wanted)
             if serial:

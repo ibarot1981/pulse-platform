@@ -480,6 +480,66 @@ def _build_ms_stage_pending_message(
     return "\n".join(lines)
 
 
+def _build_costing_user_name_by_user_id(repo: ProductionRepo) -> dict[str, str]:
+    names: dict[str, str] = {}
+    try:
+        users = repo.costing_client.get_records("Users")
+    except Exception:
+        return names
+    for row in users:
+        fields = row.get("fields", {})
+        user_id = str(fields.get("User_ID") or "").strip()
+        if not user_id:
+            continue
+        names[user_id] = str(fields.get("Name") or "").strip()
+    return names
+
+
+def _resolve_costing_actor_name(repo: ProductionRepo, user_ref_or_id, default: str = "-") -> str:
+    value = _normalize_ref(user_ref_or_id)
+    text = str(value or "").strip()
+    try:
+        users = repo.costing_client.get_records("Users")
+    except Exception:
+        return default
+    for row in users:
+        fields = row.get("fields", {})
+        rec_id = row.get("id")
+        user_id = str(fields.get("User_ID") or "").strip()
+        name = str(fields.get("Name") or "").strip()
+        if isinstance(value, int) and isinstance(rec_id, int) and value == rec_id:
+            return name or default
+        if text and text == user_id:
+            return name or default
+    return default
+
+
+def _with_handoff_recipient_name(message: str, from_name: str, to_name: str) -> str:
+    raw_lines = str(message or "").splitlines()
+    if not raw_lines:
+        return message
+    by_to_line = (
+        f"\U0001F464 By {str(from_name or '').strip() or '-'} "
+        f"\U0001F464 TO {str(to_name or '').strip() or '-'}"
+    )
+    lines_wo_old = [line for line in raw_lines if not str(line).strip().startswith("\U0001F464 By")]
+    for idx, line in enumerate(lines_wo_old):
+        if "Stage Confirmation Required" in str(line):
+            return "\n".join(lines_wo_old[: idx + 1] + [by_to_line] + lines_wo_old[idx + 1 :])
+    return "\n".join(lines_wo_old)
+
+
+def _resolve_user_names_from_ids(user_name_by_id: dict[str, str], user_ids: set[str]) -> str:
+    if not user_ids:
+        return "-"
+    labels: list[str] = []
+    for user_id in sorted({str(value or "").strip() for value in user_ids if str(value or "").strip()}):
+        labels.append(user_name_by_id.get(user_id, "").strip() or user_id)
+    if not labels:
+        return "-"
+    return ", ".join(labels)
+
+
 def _resolve_next_stage_for_row(repo: ProductionRepo, fields: dict) -> str:
     row = fields or {}
     next_stage = str(row.get("next_stage_name") or "").strip()
@@ -1273,7 +1333,7 @@ async def _show_ms_batch_tracker_overview(update, context, batch_id: int, batch_
         batch_no,
         role_name,
         viewer_user_id,
-        user_independent=True,
+        user_independent=False,
     )
     await update.effective_message.reply_text(_format_menu_text(text))
 
@@ -2067,6 +2127,32 @@ def _approver_only_recipient_renderer():
     return _render
 
 
+def _handoff_action_recipient_renderer(next_stage_user_ids: set[str], next_stage_role: str):
+    allowed_user_ids = {str(user_id or "").strip() for user_id in next_stage_user_ids if str(user_id or "").strip()}
+    role_name = str(next_stage_role or "").strip()
+
+    def _render(recipient: dict) -> dict:
+        recipient_user_id = str(recipient.get("user_id") or "").strip()
+        recipient_role_name = str(recipient.get("role_name") or "").strip()
+
+        if allowed_user_ids:
+            if recipient_user_id and recipient_user_id in allowed_user_ids:
+                return {}
+            return {"reply_markup": None}
+
+        # In TEST/real recipient payloads we generally have user_id.
+        # If no explicit assignees are mapped for the next stage, avoid turning
+        # role-based subscribers into task actors via inline confirmation buttons.
+        if recipient_user_id:
+            return {"reply_markup": None}
+
+        if role_name and _role_matches(recipient_role_name, role_name):
+            return {}
+        return {"reply_markup": None}
+
+    return _render
+
+
 def _batch_created_recipient_renderer(batch_id: int):
     approval_markup = InlineKeyboardMarkup(
         [[InlineKeyboardButton("Click Here to Approve", callback_data=_approval_callback_data("open", batch_id))]]
@@ -2075,7 +2161,9 @@ def _batch_created_recipient_renderer(batch_id: int):
     def _render(recipient: dict) -> dict:
         if _is_approval_actor_subscriber(recipient):
             return {"reply_markup": approval_markup}
-        return {"skip": True}
+        # Non-approver subscribers can still receive the notification text,
+        # but without an approval call-to-action.
+        return {"reply_markup": None}
 
     return _render
 
@@ -3745,23 +3833,46 @@ async def _mark_ms_stage_done_pending_confirmation(repo: ProductionRepo, context
     master_record = repo.get_master_by_id(batch_id) or {}
     owner_user_ids = _get_batch_owner_user_ids(repo, master_record)
     is_final_stage_handoff = bool(next_stage and next_stage == stages[-1])
+    next_stage_user_ids = _get_stage_assignment_user_ids(repo, process_seq, next_stage, can_act_only=True) if next_stage else set()
+    handoff_renderer = _handoff_action_recipient_renderer(next_stage_user_ids, next_stage_role)
+    user_name_by_id = _build_costing_user_name_by_user_id(repo)
+    from_user_name = _resolve_costing_actor_name(repo, updated_by, default="-")
+    target_user_ids = owner_user_ids if is_final_stage_handoff else next_stage_user_ids
+    target_label = _resolve_user_names_from_ids(user_name_by_id, target_user_ids)
+    if target_label == "-" and not is_final_stage_handoff and next_stage_role:
+        target_label = next_stage_role
+    pending_message = _build_ms_stage_pending_message(
+        batch_no=batch_no,
+        batch_by=batch_by,
+        part_name=part_name,
+        current_stage=current_stage_name,
+        next_stage=next_stage,
+        qty=_format_qty(float(fields.get("total_qty") or fields.get("required_qty") or 0)),
+        title="Stage Confirmation Required",
+    )
+
+    base_pending_renderer = _owner_only_recipient_renderer(owner_user_ids) if is_final_stage_handoff else handoff_renderer
+
+    def _handoff_pending_renderer(recipient: dict) -> dict:
+        rendered = base_pending_renderer(recipient) or {}
+        if rendered.get("skip"):
+            return rendered
+        rendered["message"] = _with_handoff_recipient_name(
+            pending_message,
+            from_name=from_user_name,
+            to_name=target_label,
+        )
+        return rendered
+
     if next_stage_role:
         await _notify_stage_event(
             context,
             "ms_stage_pending",
             batch_id,
-            _build_ms_stage_pending_message(
-                batch_no=batch_no,
-                batch_by=batch_by,
-                part_name=part_name,
-                current_stage=current_stage_name,
-                next_stage=next_stage,
-                qty=_format_qty(float(fields.get("total_qty") or fields.get("required_qty") or 0)),
-                title="Stage Confirmation Required",
-            ),
+            pending_message,
             supervisor_role=next_stage_role,
             reply_markup=build_stage_confirm_inline_keyboard(batch_id, row_id),
-            recipient_renderer=_owner_only_recipient_renderer(owner_user_ids) if is_final_stage_handoff else None,
+            recipient_renderer=_handoff_pending_renderer,
         )
         if is_final_stage_handoff:
             await _notify_event(

@@ -124,6 +124,25 @@ class MenuStateRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(allowed)
 
+    def test_handoff_pending_message_includes_by_to_line_after_title(self):
+        base = (
+            "📦 Batch No: B-1\n"
+            "👤 Batch By: User A\n"
+            "🧩 Product Part: Part A\n"
+            "⚠️ Stage Confirmation Required\n"
+            "🟢 Current Stage: 🔨 Plasma Cutting ➡️ To Next Press Job\n\n"
+            "Use the inline buttons below for actions."
+        )
+        rendered = production._with_handoff_recipient_name(base, "Amit", "Ravi Patel")
+        self.assertIn("⚠️ Stage Confirmation Required\n👤 By Amit 👤 TO Ravi Patel\n🟢 Current Stage:", rendered)
+
+    def test_handoff_renderer_without_assignees_removes_buttons_for_user_recipients(self):
+        renderer = production._handoff_action_recipient_renderer(set(), "Machine-Shop Supervisor")
+        self.assertEqual(
+            renderer({"user_id": "900000003", "role_name": "Production_Supervisor"}),
+            {"reply_markup": None},
+        )
+
     def test_parse_iso_datetime_supports_decimal_epoch_text(self):
         parsed = production._parse_iso_datetime("1772814858.972331")
         self.assertIsNotNone(parsed)
@@ -147,7 +166,7 @@ class MenuStateRoutingTests(unittest.IsolatedAsyncioTestCase):
                 "07-03-2026",
             )
 
-    def test_batch_created_renderer_skips_non_approver_roles(self):
+    def test_batch_created_renderer_hides_cta_for_non_approver_roles(self):
         renderer = production._batch_created_recipient_renderer(9)
 
         approver_render = renderer({"role_id": "R01", "role_name": "Production_Manager"})
@@ -155,7 +174,7 @@ class MenuStateRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("reply_markup", approver_render)
         self.assertIsNotNone(approver_render.get("reply_markup"))
-        self.assertEqual(non_approver_render.get("skip"), True)
+        self.assertEqual(non_approver_render.get("reply_markup"), None)
 
     def test_list_ms_jobs_for_user_role_includes_handoff_pending_for_visibility(self):
         class _FakeCostingClient:
@@ -330,6 +349,110 @@ class MenuStateRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("PLS-PROD", text)
         self.assertIn("PRS-PROD", text)
         self.assertNotIn("PRS-PJ-PROD", text)
+
+    def test_batch_snapshot_shows_only_machine_shop_handoff_pending_flow_and_counts(self):
+        batch_id = 101
+        batch_no = "MAR26-S1KHFL-BASE-MCS-001"
+
+        class _FakeRepo:
+            def list_ms_rows_for_batch(self, target_batch_id: int):
+                if target_batch_id != batch_id:
+                    return []
+                return [
+                    {
+                        "id": 1,
+                        "fields": {
+                            "batch_id": batch_id,
+                            "process_seq": "PLS-PJ-PROD",
+                            "current_stage_name": "Plasma Cutting",
+                            "next_stage_name": "Press Job",
+                            "current_stage_role_name": "Machine-Shop Supervisor",
+                            "current_status": production._MS_PENDING_CONFIRMATION,
+                        },
+                    },
+                    {
+                        "id": 2,
+                        "fields": {
+                            "batch_id": batch_id,
+                            "process_seq": "PLS-PROD",
+                            "current_stage_name": "Plasma Cutting",
+                            "next_stage_name": "Production",
+                            "current_stage_role_name": "Cutting_Supervisor",
+                            "current_status": "Plasma Cutting Pending",
+                        },
+                    },
+                    {
+                        "id": 3,
+                        "fields": {
+                            "batch_id": batch_id,
+                            "process_seq": "PRS-PJ-PROD",
+                            "current_stage_name": "Press Cutting",
+                            "next_stage_name": "Press Job",
+                            "current_stage_role_name": "Cutting_Supervisor",
+                            "current_status": "Press Cutting Pending",
+                        },
+                    },
+                    {
+                        "id": 4,
+                        "fields": {
+                            "batch_id": batch_id,
+                            "process_seq": "PRS-PROD",
+                            "current_stage_name": "Press Cutting",
+                            "next_stage_name": "Production",
+                            "current_stage_role_name": "Cutting_Supervisor",
+                            "current_status": "Press Cutting Pending",
+                        },
+                    },
+                ]
+
+            def get_master_by_id(self, target_batch_id: int):
+                if target_batch_id != batch_id:
+                    return None
+                return {"id": batch_id, "fields": {"created_by": 1}}
+
+            def get_process_stage_names(self, process_seq):
+                stage_map = {
+                    "PLS-PJ-PROD": ["Plasma Cutting", "Press Job", "Production"],
+                    "PLS-PROD": ["Plasma Cutting", "Production"],
+                    "PRS-PJ-PROD": ["Press Cutting", "Press Job", "Production"],
+                    "PRS-PROD": ["Press Cutting", "Production"],
+                }
+                return stage_map.get(process_seq, [])
+
+            def get_process_display_label(self, process_seq):
+                return str(process_seq or "")
+
+            def get_stage_role_for_process_stage(self, process_seq, stage_name: str) -> str:
+                mapping = {
+                    ("PLS-PJ-PROD", "Plasma Cutting"): "Cutting_Supervisor",
+                    ("PLS-PJ-PROD", "Press Job"): "Machine-Shop Supervisor",
+                    ("PLS-PJ-PROD", "Production"): "Production_Supervisor",
+                    ("PLS-PROD", "Plasma Cutting"): "Cutting_Supervisor",
+                    ("PLS-PROD", "Production"): "Production_Supervisor",
+                    ("PRS-PJ-PROD", "Press Cutting"): "Cutting_Supervisor",
+                    ("PRS-PJ-PROD", "Press Job"): "Machine-Shop Supervisor",
+                    ("PRS-PJ-PROD", "Production"): "Production_Supervisor",
+                    ("PRS-PROD", "Press Cutting"): "Cutting_Supervisor",
+                    ("PRS-PROD", "Production"): "Production_Supervisor",
+                }
+                return mapping.get((str(process_seq or ""), str(stage_name or "")), "")
+
+        text = production._build_ms_batch_snapshot_overview_text(
+            _FakeRepo(),
+            batch_id,
+            batch_no,
+            user_role_name="Machine-Shop Supervisor",
+            viewer_user_id="900000006",
+        )
+        self.assertIn("Flows: 1", text)
+        self.assertIn("Complete: 0", text)
+        self.assertIn("Running: 0", text)
+        self.assertIn("Pending: 0", text)
+        self.assertIn("Hand-off Pending: 1", text)
+        self.assertIn("PLS-PJ-PROD", text)
+        self.assertNotIn("PLS-PROD", text)
+        self.assertNotIn("PRS-PJ-PROD", text)
+        self.assertNotIn("PRS-PROD", text)
 
     def test_batch_snapshot_shows_all_flows_for_owner_and_admin(self):
         batch_id = 101
@@ -506,6 +629,23 @@ class MenuStateRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Plasma + Press Job + Production", text)
         self.assertNotIn("Press + Production", text)
         self.assertNotIn("V1", text)
+
+    async def test_show_ms_batch_tracker_overview_uses_role_filtered_snapshot(self):
+        update = _DummyUpdate("x")
+        context = _DummyContext({"user": {"user_id": "900000006"}})
+
+        with (
+            patch("pulse.integrations.production.ProductionRepo") as repo_cls,
+            patch("pulse.integrations.production._resolve_user_role_name", return_value="Machine-Shop Supervisor"),
+            patch("pulse.integrations.production._build_ms_batch_snapshot_overview_text", return_value="Batch Overview\nFlows: 1") as builder,
+        ):
+            repo_cls.return_value = object()
+            await production._show_ms_batch_tracker_overview(update, context, 101, "MAR26-S1KHFL-BASE-MCS-001")
+
+        self.assertEqual(len(update.effective_message.replies), 1)
+        self.assertEqual(update.effective_message.replies[0][0], "Batch Overview\nFlows: 1")
+        self.assertIn("user_independent", builder.call_args.kwargs)
+        self.assertFalse(builder.call_args.kwargs["user_independent"])
 
     def test_apply_ms_jobs_filter_includes_all_owner_rows_for_non_privileged_views(self):
         all_rows = [
@@ -982,7 +1122,9 @@ class MenuStateRoutingTests(unittest.IsolatedAsyncioTestCase):
         pending_call = notify_stage_event.await_args_list[0]
         renderer = pending_call.kwargs.get("recipient_renderer")
         self.assertIsNotNone(renderer)
-        self.assertEqual(renderer({"user_id": "owner-user"}).get("skip"), None)
+        owner_render = renderer({"user_id": "owner-user"})
+        self.assertEqual(owner_render.get("skip"), None)
+        self.assertIn("TO Owner User", str(owner_render.get("message") or ""))
         self.assertEqual(renderer({"user_id": "other-user"}).get("skip"), True)
 
         self.assertGreaterEqual(notify_event.await_count, 1)
@@ -991,6 +1133,87 @@ class MenuStateRoutingTests(unittest.IsolatedAsyncioTestCase):
             set(info_call.kwargs.get("context", {}).get("recipient_roles", [])),
             {"Production_Manager", "System_Admin"},
         )
+
+    async def test_mark_done_non_final_handoff_buttons_only_for_next_stage_assignees(self):
+        class _FakeCostingClient:
+            def get_records(self, table: str):
+                if table != "Users":
+                    return []
+                return [{"id": 501, "fields": {"User_ID": "owner-user", "Name": "Owner User"}}]
+
+        class _FakeRepo:
+            costing_client = _FakeCostingClient()
+
+            def get_ms_row_by_id(self, row_id: int):
+                return {
+                    "id": row_id,
+                    "fields": {
+                        "batch_id": 101,
+                        "process_seq": "SEQ-1",
+                        "current_stage_index": 0,
+                        "current_stage_name": "Plasma Cutting",
+                        "next_stage_name": "Press Job",
+                        "current_status": "Plasma Cutting Pending",
+                        "total_qty": 16,
+                        "product_part": "P1",
+                    },
+                }
+
+            def get_process_stage_names(self, process_seq):
+                return ["Plasma Cutting", "Press Job", "Production"]
+
+            def get_stage_role_for_process_stage(self, process_seq, stage_name: str) -> str:
+                role_map = {
+                    "Plasma Cutting": "Cutting_Supervisor",
+                    "Press Job": "Press_Job_Supervisor",
+                    "Production": "Production_Supervisor",
+                }
+                return role_map.get(stage_name, "")
+
+            def filter_table_fields(self, table: str, fields: dict):
+                return fields
+
+            def update_ms(self, row_id: int, fields: dict):
+                return None
+
+            def add_status_history(self, *args, **kwargs):
+                return None
+
+            def get_master_by_id(self, batch_id: int):
+                return {"id": batch_id, "fields": {"batch_no": "B-101", "created_by": "owner-user"}}
+
+            def format_product_parts(self, value):
+                return str(value or "")
+
+        context = _DummyContext({"user": {"user_id": "current-user"}})
+        context.bot = _DummyBot()
+        notify_stage_event = AsyncMock()
+
+        with (
+            patch("pulse.integrations.production._notify_stage_event", new=notify_stage_event),
+            patch("pulse.integrations.production.recalculate_master_overall_status", return_value="In Progress"),
+            patch("pulse.integrations.production._get_stage_assignment_user_ids", return_value={"next-user"}),
+        ):
+            await production._mark_ms_stage_done_pending_confirmation(_FakeRepo(), context, 1, 7)
+
+        self.assertGreaterEqual(notify_stage_event.await_count, 1)
+        pending_call = notify_stage_event.await_args_list[0]
+        renderer = pending_call.kwargs.get("recipient_renderer")
+        self.assertIsNotNone(renderer)
+        next_user_render = renderer({"user_id": "next-user"})
+        self.assertNotIn("reply_markup", next_user_render)
+        self.assertIn("By -", str(next_user_render.get("message") or ""))
+        self.assertIn("TO next-user", str(next_user_render.get("message") or ""))
+
+        current_user_render = renderer({"user_id": "current-user"})
+        self.assertEqual(current_user_render.get("reply_markup"), None)
+        self.assertIn("By -", str(current_user_render.get("message") or ""))
+        self.assertIn("TO next-user", str(current_user_render.get("message") or ""))
+
+        owner_render = renderer({"user_id": "owner-user"})
+        self.assertEqual(owner_render.get("reply_markup"), None)
+        self.assertIn("By -", str(owner_render.get("message") or ""))
+        self.assertIn("TO next-user", str(owner_render.get("message") or ""))
 
     async def test_advance_final_stage_notifies_only_owner_for_action_and_approvers_for_info(self):
         class _FakeCostingClient:

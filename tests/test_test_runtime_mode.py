@@ -182,7 +182,7 @@ def test_main_uses_test_loop_in_test_mode(monkeypatch):
     assert calls["test_loop"] == 1
 
 
-def test_batch_created_notification_sent_only_to_approver(monkeypatch):
+def test_batch_created_notification_sends_cta_only_to_approver(monkeypatch):
     sent: list[dict] = []
 
     class _FakeBot:
@@ -235,10 +235,15 @@ def test_batch_created_notification_sent_only_to_approver(monkeypatch):
         )
     )
 
-    assert len(sent) == 1
-    assert sent[0]["chat_id"] == "1002"
-    assert sent[0]["recipient"].get("role_name") == "Production_Manager"
-    markup = sent[0]["reply_markup"]
+    assert len(sent) == 2
+
+    sup = next(item for item in sent if item["chat_id"] == "1001")
+    assert sup["recipient"].get("role_name") == "Production_Supervisor"
+    assert sup["reply_markup"] is None
+
+    pm = next(item for item in sent if item["chat_id"] == "1002")
+    assert pm["recipient"].get("role_name") == "Production_Manager"
+    markup = pm["reply_markup"]
     assert markup is not None
     assert "prodappr:open:9" in str(markup)
 
