@@ -463,13 +463,20 @@ def _build_ms_stage_pending_message(
     next_stage: str,
     qty: str,
     title: str = "New Batch Approved !!!",
+    process_code: str = "",
 ) -> str:
     title = str(title or "").strip()
-    lines = [
+    process_code_value = str(process_code or "").strip()
+    lines = []
+    if process_code_value:
+        lines.append(f"\u2705 STAGE COMPLETED : {process_code_value}")
+    lines.extend(
+        [
         f"\U0001F4E6 Batch No: {batch_no}",
         f"\U0001F464 Batch By: {batch_by or '-'}",
         f"\U0001F9E9 Product Part: {part_name}",
-    ]
+        ]
+    )
     if title and title != "New Batch Approved !!!":
         lines.append(f"\u26A0\uFE0F {title}")
     stage_line_next = next_stage or "-"
@@ -1867,9 +1874,15 @@ def build_stage_confirm_inline_keyboard(batch_id: int, row_id: int) -> InlineKey
         [
             [
                 InlineKeyboardButton(
+                    "Current Stage Done",
+                    callback_data=_supervisor_callback_data("done_row", row_id),
+                ),
+                InlineKeyboardButton(
                     "Confirm Stage Handover",
                     callback_data=_supervisor_callback_data("confirm_row", row_id),
                 ),
+            ],
+            [
                 InlineKeyboardButton(
                     "Schedule Batch",
                     callback_data=_supervisor_callback_data("schedule", batch_id),
@@ -2127,6 +2140,37 @@ def _approver_only_recipient_renderer():
     return _render
 
 
+def _suppress_user_recipient_renderer(suppressed_user_id: str):
+    blocked_user_id = str(suppressed_user_id or "").strip()
+    if not blocked_user_id:
+        return None
+
+    def _render(recipient: dict) -> dict:
+        recipient_user_id = str(recipient.get("user_id") or "").strip()
+        if recipient_user_id and recipient_user_id == blocked_user_id:
+            return {"skip": True}
+        return {}
+
+    return _render
+
+
+def _chain_recipient_renderers(*renderers):
+    normalized = [renderer for renderer in renderers if callable(renderer)]
+    if not normalized:
+        return None
+
+    def _render(recipient: dict) -> dict:
+        merged: dict = {}
+        for renderer in normalized:
+            output = renderer(recipient) or {}
+            if output.get("skip"):
+                return {"skip": True}
+            merged.update(output)
+        return merged
+
+    return _render
+
+
 def _handoff_action_recipient_renderer(next_stage_user_ids: set[str], next_stage_role: str):
     allowed_user_ids = {str(user_id or "").strip() for user_id in next_stage_user_ids if str(user_id or "").strip()}
     role_name = str(next_stage_role or "").strip()
@@ -2140,12 +2184,8 @@ def _handoff_action_recipient_renderer(next_stage_user_ids: set[str], next_stage
                 return {}
             return {"reply_markup": None}
 
-        # In TEST/real recipient payloads we generally have user_id.
-        # If no explicit assignees are mapped for the next stage, avoid turning
-        # role-based subscribers into task actors via inline confirmation buttons.
-        if recipient_user_id:
-            return {"reply_markup": None}
-
+        # If explicit assignees are missing, fall back to role-based routing so
+        # next-stage supervisors can still confirm/reject handoff.
         if role_name and _role_matches(recipient_role_name, role_name):
             return {}
         return {"reply_markup": None}
@@ -2287,6 +2327,34 @@ async def _prompt_schedule_date(update, context, batch_ids: list[int], return_st
         update,
         f"{title}\nSelect date or enter `YYYY-MM-DD`.",
         [[_TODAY], [_TOMORROW], [BACK_LABEL]],
+    )
+
+
+async def _notify_handoff_completed_after_schedule(context, repo: ProductionRepo, handoff_ctx: dict, scheduled_date_iso: str) -> None:
+    batch_id = handoff_ctx.get("batch_id")
+    if not isinstance(batch_id, int):
+        return
+    batch_no = str((repo.get_master_by_id(batch_id) or {}).get("fields", {}).get("batch_no") or "")
+    row_id = handoff_ctx.get("row_id")
+    row = repo.get_ms_row_by_id(row_id) if isinstance(row_id, int) else None
+    row_fields = (row or {}).get("fields", {}) if isinstance(row, dict) else {}
+    part_name = _resolve_ms_row_part_text(repo, row_fields) if row_fields else "-"
+    from_stage = str(handoff_ctx.get("from_stage") or "").strip() or "-"
+    to_stage = str(handoff_ctx.get("to_stage") or "").strip() or str(row_fields.get("current_stage_name") or "").strip() or "-"
+    confirmed_by = str(handoff_ctx.get("confirmed_by_name") or handoff_ctx.get("confirmed_by_user_id") or "-").strip() or "-"
+    message = (
+        f"\u2705 Handoff Completed\n"
+        f"\U0001F4E6 Batch No: {batch_no}\n"
+        f"\U0001F9E9 Product Part: {part_name}\n"
+        f"\U0001F501 Stage: {from_stage} \u27A1\uFE0F {to_stage}\n"
+        f"\U0001F4C5 Scheduled Date: {_format_notification_datetime(scheduled_date_iso)}\n"
+        f"\U0001F464 Confirmed By: {confirmed_by}"
+    )
+    await _notify_event(
+        context.bot,
+        "batch_status_changed",
+        message,
+        context={"batch_id": batch_id},
     )
 
 
@@ -2606,6 +2674,8 @@ def _resolve_ms_batch_flow_message_payload(
     repo: ProductionRepo,
     batch_id: int,
     flow_number: int,
+    user_role_name: str = "",
+    viewer_user_id: str = "",
 ) -> tuple[str, InlineKeyboardMarkup] | None:
     if flow_number <= 0:
         return None
@@ -2618,6 +2688,7 @@ def _resolve_ms_batch_flow_message_payload(
     if not isinstance(row_id, int):
         return None
     fields = row.get("fields", {})
+    row_status = str(fields.get("current_status") or fields.get("status") or "").strip()
     stage_name = str(fields.get("current_stage_name") or "").strip()
     next_stage = _resolve_next_stage_for_row(repo, fields)
     part_name = _resolve_ms_row_part_text(repo, row)
@@ -2634,6 +2705,14 @@ def _resolve_ms_batch_flow_message_payload(
         next_stage=next_stage,
         qty=qty,
     )
+    if row_status == _MS_PENDING_CONFIRMATION and _can_confirm_handoff(
+        repo,
+        fields,
+        user_role_name,
+        viewer_user_id=viewer_user_id,
+        row_id=row_id,
+    ):
+        return message, build_stage_confirm_inline_keyboard(batch_id, row_id)
     return message, build_stage_inline_keyboard(batch_id, row_id)
 
 
@@ -3708,10 +3787,30 @@ async def _execute_ms_job_action(update, context, action_code: str, selected_rec
             if not _can_confirm_handoff(repo, row_fields, user_role_name, viewer_user_id=viewer_user_id, row_id=row_id):
                 await _reply(update, "Only the next-stage supervisor can confirm this handover.")
                 return True
+            context.user_data["suppress_ms_stage_pending_user_id"] = viewer_user_id
             try:
                 await advance_ms_stage(repo, context, row_id, updated_by)
             except Exception:
                 await _reply(update, "Could not confirm and advance this stage.")
+                return True
+            finally:
+                context.user_data.pop("suppress_ms_stage_pending_user_id", None)
+            if isinstance(batch_id, int) and _is_batch_schedulable_for_role(repo, batch_id, user_role_name):
+                context.user_data["handoff_schedule_context"] = {
+                    "batch_id": batch_id,
+                    "row_id": row_id,
+                    "from_stage": stage_name,
+                    "to_stage": str(row_fields.get("next_stage_name") or "").strip(),
+                    "confirmed_by_user_id": viewer_user_id,
+                    "confirmed_by_name": str(user.get("name") or viewer_user_id or "-"),
+                }
+                await _prompt_schedule_date(
+                    update,
+                    context,
+                    [batch_id],
+                    return_state=MY_MS_JOBS_SELECTION_STATE,
+                    title="Schedule selected batch",
+                )
                 return True
             await _reply(update, "Stage handover confirmed.")
             return True
@@ -3791,6 +3890,10 @@ async def _mark_ms_stage_done_pending_confirmation(repo: ProductionRepo, context
     if not isinstance(batch_id, int):
         raise ValueError("Invalid batch reference in MS row.")
     process_seq = _normalize_process_seq(fields)
+    try:
+        process_code = str(repo.get_process_display_label(process_seq) or "").strip()
+    except Exception:
+        process_code = str(process_seq or "").strip()
     stages = repo.get_process_stage_names(process_seq)
     if not stages:
         raise ValueError("Missing process sequence on MS row.")
@@ -3849,6 +3952,7 @@ async def _mark_ms_stage_done_pending_confirmation(repo: ProductionRepo, context
         next_stage=next_stage,
         qty=_format_qty(float(fields.get("total_qty") or fields.get("required_qty") or 0)),
         title="Stage Confirmation Required",
+        process_code=process_code,
     )
 
     base_pending_renderer = _owner_only_recipient_renderer(owner_user_ids) if is_final_stage_handoff else handoff_renderer
@@ -4011,6 +4115,12 @@ async def advance_ms_stage(repo: ProductionRepo, context, row_id: int, updated_b
         markup = build_stage_inline_keyboard(batch_id, row_id)
         owner_user_ids = _get_batch_owner_user_ids(repo, master_record)
         is_final_stage_transition = bool(next_stage == stages[-1])
+        suppress_user_id = str(context.user_data.get("suppress_ms_stage_pending_user_id") or "").strip()
+        base_renderer = _owner_only_recipient_renderer(owner_user_ids) if is_final_stage_transition else None
+        recipient_renderer = _chain_recipient_renderers(
+            base_renderer,
+            _suppress_user_recipient_renderer(suppress_user_id),
+        )
         await _notify_stage_event(
             context,
             "ms_stage_pending",
@@ -4026,7 +4136,7 @@ async def advance_ms_stage(repo: ProductionRepo, context, row_id: int, updated_b
             ),
             supervisor_role=next_stage_role,
             reply_markup=markup,
-            recipient_renderer=_owner_only_recipient_renderer(owner_user_ids) if is_final_stage_transition else None,
+            recipient_renderer=recipient_renderer,
         )
         if is_final_stage_transition:
             await _notify_event(
@@ -4274,6 +4384,7 @@ async def handle_production_callback(update, context) -> bool:
 
     repo = ProductionRepo()
     user = context.user_data.get("user", {})
+    viewer_user_id = str(user.get("user_id") or "").strip()
     user_role_name = repo.get_role_name_by_user_id(user.get("user_id", ""))
     updated_by = repo.get_costing_user_ref_by_user_id(user.get("user_id", ""))
 
@@ -4282,7 +4393,6 @@ async def handle_production_callback(update, context) -> bool:
         action, batch_id, arg1, arg2 = parsed_batch_view
         await query.answer()
         batch_no = _resolve_batch_no(repo, batch_id)
-        viewer_user_id = str(user.get("user_id") or "").strip()
         if action == "ov":
             text = _build_ms_batch_snapshot_overview_text(
                 repo,
@@ -4340,7 +4450,46 @@ async def handle_production_callback(update, context) -> bool:
 
             if action == "dn":
                 if status == _MS_PENDING_CONFIRMATION:
-                    await query.message.reply_text("This flow is waiting for next-stage hand-off confirmation.")
+                    if not _can_confirm_handoff(
+                        repo,
+                        row_fields,
+                        user_role_name,
+                        viewer_user_id=viewer_user_id,
+                        row_id=row_id,
+                    ):
+                        await query.message.reply_text("Only the next-stage supervisor can confirm this hand-off.")
+                        return True
+                    context.user_data["suppress_ms_stage_pending_user_id"] = viewer_user_id
+                    try:
+                        await advance_ms_stage(repo, context, row_id, updated_by)
+                    except Exception:
+                        await query.message.reply_text("Could not confirm and advance this flow.")
+                        return True
+                    finally:
+                        context.user_data.pop("suppress_ms_stage_pending_user_id", None)
+                    if _is_batch_schedulable_for_role(repo, batch_id, user_role_name):
+                        context.user_data["handoff_schedule_context"] = {
+                            "batch_id": batch_id,
+                            "row_id": row_id,
+                            "from_stage": current_stage,
+                            "to_stage": next_stage,
+                            "confirmed_by_user_id": viewer_user_id,
+                            "confirmed_by_name": str(user.get("name") or viewer_user_id or "-"),
+                        }
+                        context.user_data["my_ms_batch_action"] = {
+                            "batch_id": batch_id,
+                            "batch_no": batch_no,
+                            "source_state": MY_MS_JOBS_BATCH_SELECTION_STATE,
+                        }
+                        await _prompt_schedule_date(
+                            update,
+                            context,
+                            [batch_id],
+                            return_state=MY_MS_BATCH_ACTION_STATE,
+                            title=f"Schedule Batch {batch_no or ''}",
+                        )
+                        return True
+                    await _render_ms_batch_flow_selector(query, context, repo, batch_id, "d", page)
                     return True
                 if not _role_matches(user_role_name, current_role):
                     await query.message.reply_text("Only the current-stage supervisor can mark this stage done.")
@@ -4366,10 +4515,35 @@ async def handle_production_callback(update, context) -> bool:
                 ):
                     await query.message.reply_text("Only the next-stage supervisor can confirm this hand-off.")
                     return True
+                context.user_data["suppress_ms_stage_pending_user_id"] = viewer_user_id
                 try:
                     await advance_ms_stage(repo, context, row_id, updated_by)
                 except Exception:
                     await query.message.reply_text("Could not confirm and advance this flow.")
+                    return True
+                finally:
+                    context.user_data.pop("suppress_ms_stage_pending_user_id", None)
+                if _is_batch_schedulable_for_role(repo, batch_id, user_role_name):
+                    context.user_data["handoff_schedule_context"] = {
+                        "batch_id": batch_id,
+                        "row_id": row_id,
+                        "from_stage": current_stage,
+                        "to_stage": next_stage,
+                        "confirmed_by_user_id": viewer_user_id,
+                        "confirmed_by_name": str(user.get("name") or viewer_user_id or "-"),
+                    }
+                    context.user_data["my_ms_batch_action"] = {
+                        "batch_id": batch_id,
+                        "batch_no": batch_no,
+                        "source_state": MY_MS_JOBS_BATCH_SELECTION_STATE,
+                    }
+                    await _prompt_schedule_date(
+                        update,
+                        context,
+                        [batch_id],
+                        return_state=MY_MS_BATCH_ACTION_STATE,
+                        title=f"Schedule Batch {batch_no or ''}",
+                    )
                     return True
                 await _render_ms_batch_flow_selector(query, context, repo, batch_id, "d", page)
                 return True
@@ -4436,6 +4610,7 @@ async def handle_production_callback(update, context) -> bool:
                 return True
             fields = row.get("fields", {})
             row_status = str(fields.get("current_status") or fields.get("status") or "").strip()
+            batch_id = _normalize_ref(fields.get("batch_id"))
             process_seq = _normalize_process_seq(fields)
             stage_name = str(fields.get("current_stage_name") or "").strip()
             current_role = _resolve_supervisor_role_for_stage(repo, process_seq, stage_name)
@@ -4450,10 +4625,30 @@ async def handle_production_callback(update, context) -> bool:
                 ):
                     await query.message.reply_text("Only the next-stage supervisor can confirm this handover.")
                     return True
+                context.user_data["suppress_ms_stage_pending_user_id"] = viewer_user_id
                 try:
                     await advance_ms_stage(repo, context, record_id, updated_by)
                 except Exception:
                     await query.message.reply_text("Could not confirm and advance this stage.")
+                    return True
+                finally:
+                    context.user_data.pop("suppress_ms_stage_pending_user_id", None)
+                if isinstance(batch_id, int) and _is_batch_schedulable_for_role(repo, batch_id, user_role_name):
+                    context.user_data["handoff_schedule_context"] = {
+                        "batch_id": batch_id,
+                        "row_id": record_id,
+                        "from_stage": stage_name,
+                        "to_stage": str(fields.get("next_stage_name") or "").strip(),
+                        "confirmed_by_user_id": viewer_user_id,
+                        "confirmed_by_name": str(user.get("name") or viewer_user_id or "-"),
+                    }
+                    await _prompt_schedule_date(
+                        update,
+                        context,
+                        [batch_id],
+                        return_state=_target_return_state(context),
+                        title="Schedule Batch",
+                    )
                     return True
                 await query.message.reply_text("Stage handover confirmed.")
                 return True
@@ -4474,6 +4669,7 @@ async def handle_production_callback(update, context) -> bool:
                 await query.message.reply_text("MS row not found.")
                 return True
             fields = row.get("fields", {})
+            batch_id = _normalize_ref(fields.get("batch_id"))
             row_status = str(fields.get("current_status") or fields.get("status") or "").strip()
             if row_status != _MS_PENDING_CONFIRMATION:
                 await query.message.reply_text("This row is not waiting for confirmation.")
@@ -4487,10 +4683,30 @@ async def handle_production_callback(update, context) -> bool:
             ):
                 await query.message.reply_text("Only the next-stage supervisor can confirm this handover.")
                 return True
+            context.user_data["suppress_ms_stage_pending_user_id"] = viewer_user_id
             try:
                 await advance_ms_stage(repo, context, record_id, updated_by)
             except Exception:
                 await query.message.reply_text("Could not confirm and advance this stage.")
+                return True
+            finally:
+                context.user_data.pop("suppress_ms_stage_pending_user_id", None)
+            if isinstance(batch_id, int) and _is_batch_schedulable_for_role(repo, batch_id, user_role_name):
+                context.user_data["handoff_schedule_context"] = {
+                    "batch_id": batch_id,
+                    "row_id": record_id,
+                    "from_stage": str(fields.get("current_stage_name") or "").strip(),
+                    "to_stage": str(fields.get("next_stage_name") or "").strip(),
+                    "confirmed_by_user_id": viewer_user_id,
+                    "confirmed_by_name": str(user.get("name") or viewer_user_id or "-"),
+                }
+                await _prompt_schedule_date(
+                    update,
+                    context,
+                    [batch_id],
+                    return_state=_target_return_state(context),
+                    title="Schedule Batch",
+                )
                 return True
             await query.message.reply_text("Stage handover confirmed.")
             return True
@@ -5851,7 +6067,13 @@ async def handle_production_state_text(update, context, text: str) -> bool:
         selected_numbers = _parse_number_tokens(text)
         if len(selected_numbers) == 1:
             flow_number = selected_numbers[0]
-            payload = _resolve_ms_batch_flow_message_payload(repo, batch_id, flow_number)
+            payload = _resolve_ms_batch_flow_message_payload(
+                repo,
+                batch_id,
+                flow_number,
+                user_role_name=user_role_name,
+                viewer_user_id=str(user.get("user_id") or "").strip(),
+            )
             if not payload:
                 total_flows = len(_ordered_ms_rows_for_batch(repo, batch_id))
                 if total_flows <= 0:
@@ -6171,6 +6393,7 @@ async def handle_production_state_text(update, context, text: str) -> bool:
             schedule_ctx = context.user_data.get("schedule_date_context", {})
             return_state = schedule_ctx.get("return_state") or _target_return_state(context)
             context.user_data.pop("schedule_date_context", None)
+            context.user_data.pop("handoff_schedule_context", None)
             context.user_data["menu_state"] = return_state
             if return_state == MY_MS_JOBS_SELECTION_STATE:
                 await _show_my_ms_jobs_page(update, context)
@@ -6196,11 +6419,13 @@ async def handle_production_state_text(update, context, text: str) -> bool:
         schedule_ctx = context.user_data.get("schedule_date_context", {})
         batch_ids = schedule_ctx.get("batch_ids", [])
         return_state = schedule_ctx.get("return_state") or _target_return_state(context)
+        handoff_schedule_ctx = context.user_data.get("handoff_schedule_context", {})
         repo = ProductionRepo()
         user = context.user_data.get("user", {})
         role_name = _resolve_user_role_name(repo, context)
         updated_by = repo.get_costing_user_ref_by_user_id(user.get("user_id", ""))
         scheduled = 0
+        scheduled_batch_ids: list[int] = []
         for batch_id in batch_ids:
             if not isinstance(batch_id, int):
                 continue
@@ -6214,7 +6439,21 @@ async def handle_production_state_text(update, context, text: str) -> bool:
                 remarks=f"Scheduled by {user.get('user_id', '')} via supervisor flow",
             )
             scheduled += 1
+            scheduled_batch_ids.append(batch_id)
+        if (
+            scheduled > 0
+            and isinstance(handoff_schedule_ctx, dict)
+            and isinstance(handoff_schedule_ctx.get("batch_id"), int)
+            and handoff_schedule_ctx.get("batch_id") in scheduled_batch_ids
+        ):
+            await _notify_handoff_completed_after_schedule(
+                context,
+                repo,
+                handoff_schedule_ctx,
+                scheduled_date_iso,
+            )
         context.user_data.pop("schedule_date_context", None)
+        context.user_data.pop("handoff_schedule_context", None)
         await _reply(update, f"Scheduled {scheduled} batch(es) for {scheduled_date_iso[:10]}.")
 
         if return_state == MY_MS_SCHEDULE_SELECTION_STATE:

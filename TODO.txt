@@ -91,3 +91,4 @@ However, two things needs to be done here :
 Keep this same view formatting consistent for list of entries to be shown for, except the list will be ordered by (Batches or Created By or State selected) :
 view By Created By
 and view by Next Stage
+

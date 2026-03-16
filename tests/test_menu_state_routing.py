@@ -143,6 +143,80 @@ class MenuStateRoutingTests(unittest.IsolatedAsyncioTestCase):
             {"reply_markup": None},
         )
 
+    def test_handoff_renderer_without_assignees_allows_buttons_for_matching_next_stage_role(self):
+        renderer = production._handoff_action_recipient_renderer(set(), "Machine-Shop Supervisor")
+        self.assertEqual(
+            renderer({"user_id": "900000003", "role_name": "Machine-Shop Supervisor"}),
+            {},
+        )
+
+    def test_stage_pending_message_includes_stage_completed_header_with_process_code(self):
+        message = production._build_ms_stage_pending_message(
+            batch_no="B-1",
+            batch_by="User A",
+            part_name="Part A",
+            current_stage="Plasma Cutting",
+            next_stage="Press Job",
+            qty="10",
+            title="Stage Confirmation Required",
+            process_code="PLS-PJ-PROD",
+        )
+        self.assertTrue(message.startswith("✅ STAGE COMPLETED : PLS-PJ-PROD\n"))
+
+    def test_stage_confirm_keyboard_includes_done_confirm_and_schedule(self):
+        keyboard = production.build_stage_confirm_inline_keyboard(10, 4).to_dict()
+        callbacks = {
+            str(button.get("callback_data") or "")
+            for row in keyboard.get("inline_keyboard", [])
+            for button in row
+        }
+        self.assertIn("prodsv:done_row:4", callbacks)
+        self.assertIn("prodsv:confirm_row:4", callbacks)
+        self.assertIn("prodsv:schedule:10", callbacks)
+
+    def test_resolve_ms_batch_flow_payload_uses_confirm_keyboard_when_handoff_pending(self):
+        class _FakeRepo:
+            def get_master_by_id(self, batch_id: int):
+                return {"id": batch_id, "fields": {"batch_no": "B-101"}}
+
+            def format_product_parts(self, value):
+                return str(value or "")
+
+        row = {
+            "id": 4,
+            "fields": {
+                "batch_id": 10,
+                "current_status": production._MS_PENDING_CONFIRMATION,
+                "current_stage_name": "Plasma Cutting",
+                "next_stage_name": "Press Job",
+                "total_qty": 5,
+                "product_part": "Part-A",
+            },
+        }
+
+        with (
+            patch("pulse.integrations.production._ordered_ms_rows_for_batch", return_value=[row]),
+            patch("pulse.integrations.production._resolve_next_stage_for_row", return_value="Press Job"),
+            patch("pulse.integrations.production._get_batch_creator_name_map", return_value={10: "User A"}),
+            patch("pulse.integrations.production._can_confirm_handoff", return_value=True),
+        ):
+            payload = production._resolve_ms_batch_flow_message_payload(
+                _FakeRepo(),
+                10,
+                1,
+                user_role_name="Machine-Shop Supervisor",
+                viewer_user_id="900000006",
+            )
+
+        self.assertIsNotNone(payload)
+        _, reply_markup = payload
+        callbacks = {
+            str(button.get("callback_data") or "")
+            for row_buttons in reply_markup.to_dict().get("inline_keyboard", [])
+            for button in row_buttons
+        }
+        self.assertIn("prodsv:confirm_row:4", callbacks)
+
     def test_parse_iso_datetime_supports_decimal_epoch_text(self):
         parsed = production._parse_iso_datetime("1772814858.972331")
         self.assertIsNotNone(parsed)
