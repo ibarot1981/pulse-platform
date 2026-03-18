@@ -338,8 +338,38 @@ Tables created in Costing for this requirement:
 
 5. `UserRoleAssignment_Mirror`
 - Purpose: User-role mapping used for supervisor suggestions.
-- Data source in phase 1: derived from Pulse `Users.Role` (single role per user).
-- Enter manually only if temporary override is needed before Pulse-side update.
+- Source of truth: Pulse `UserRoleAssignment` (multi-role capable).
+- Sync target: Costing `UserRoleAssignment_Mirror`.
+- Sync script: `scripts/grist/sync_pulse_user_role_assignments_to_costing.py`
+- Non-destructive behavior:
+  - Upsert by `assignment_key` only.
+  - No deletes.
+  - Existing rows without `assignment_key` are untouched.
+
+### J1) Safe Sync Command (UserRoleAssignment -> Mirror)
+
+Use this when a user is updated in Pulse with additional role assignments.
+
+Dry-run first (recommended):
+
+```powershell
+$env:PYTHONPATH='.'
+python scripts/grist/sync_pulse_user_role_assignments_to_costing.py --user-id U02 --dry-run
+```
+
+Apply for just that user:
+
+```powershell
+$env:PYTHONPATH='.'
+python scripts/grist/sync_pulse_user_role_assignments_to_costing.py --user-id U02
+```
+
+Apply for all users (still upsert-only; no deletes):
+
+```powershell
+$env:PYTHONPATH='.'
+python scripts/grist/sync_pulse_user_role_assignments_to_costing.py
+```
 
 6. `ProcessMaster.process_remarks` (column)
 - Purpose: Remarks shown in `ProductPartMSList.Process_Seq_Remarks`.

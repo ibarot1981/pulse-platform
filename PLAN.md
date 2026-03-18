@@ -102,3 +102,4 @@ Give me your ideas and do not implement this as of now. Only if the design inten
 - Minimal-change principle:
   - Keep existing event model, approval flow, and role-based fallback behavior intact.
   - Additive schema changes preferred over breaking field-type changes.
+

@@ -4098,7 +4098,6 @@ async def advance_ms_stage(repo: ProductionRepo, context, row_id: int, updated_b
         "ms_stage_completed",
         batch_id,
         f"MS stage completed for batch {batch_no}: {part_name} | Stage: {current_stage_name} | Status: {new_status}",
-        supervisor_role=current_stage_role,
     )
 
     if next_stage:

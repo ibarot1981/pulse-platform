@@ -1349,6 +1349,10 @@ class MenuStateRoutingTests(unittest.IsolatedAsyncioTestCase):
         ):
             await production.advance_ms_stage(_FakeRepo(), context, 1, 7)
 
+        completed_calls = [call for call in notify_stage_event.await_args_list if call.args[1] == "ms_stage_completed"]
+        self.assertTrue(completed_calls)
+        self.assertNotIn("supervisor_role", completed_calls[0].kwargs)
+
         pending_calls = [call for call in notify_stage_event.await_args_list if call.args[1] == "ms_stage_pending"]
         self.assertTrue(pending_calls)
         renderer = pending_calls[0].kwargs.get("recipient_renderer")
