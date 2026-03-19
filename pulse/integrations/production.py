@@ -2631,7 +2631,7 @@ async def _send_ms_batch_first_stage_detail_messages(
         await query.message.reply_text("Batch not found.")
         return
 
-    batch_by_map = _get_batch_creator_name_map(repo, {batch_id})
+    batch_by_map = _get_batch_owner_name_map(repo, {batch_id})
     batch_by = batch_by_map.get(batch_id, "-")
     user = context.user_data.get("user", {})
     user_role_name = repo.get_role_name_by_user_id(user.get("user_id", ""))
@@ -2695,7 +2695,7 @@ def _resolve_ms_batch_flow_message_payload(
     qty = _format_qty(float(fields.get("total_qty") or fields.get("required_qty") or 0))
     batch = repo.get_master_by_id(batch_id) or {}
     batch_no = str(batch.get("fields", {}).get("batch_no") or "")
-    batch_by = _get_batch_creator_name_map(repo, {batch_id}).get(batch_id, "-")
+    batch_by = _get_batch_owner_name_map(repo, {batch_id}).get(batch_id, "-")
 
     message = _build_ms_stage_pending_message(
         batch_no=batch_no,
@@ -2724,11 +2724,15 @@ async def _notify_ms_first_stage(repo: ProductionRepo, context, batch_id: int, m
     master_fields = batch.get("fields", {})
     status = str(master_fields.get("overall_status") or "Schedule Pending")
     approved_by = str(context.user_data.get("user", {}).get("name") or "-")
-    batch_by_map = _get_batch_creator_name_map(repo, {batch_id})
+    batch_by_map = _get_batch_owner_name_map(repo, {batch_id})
     batch_by = batch_by_map.get(batch_id, "-")
 
     by_record_id, by_user_id = _build_costing_user_name_indexes(repo)
-    batch_by = batch_by or _resolve_costing_user_name(master_fields.get("created_by"), by_record_id, by_user_id) or "-"
+    batch_by = batch_by or _resolve_costing_user_name(
+        master_fields.get("owner_user") or master_fields.get("created_by"),
+        by_record_id,
+        by_user_id,
+    ) or "-"
     rows_by_role = _build_rows_by_stage_role(repo, ms_rows)
     for row in ms_rows:
         fields = row.get("fields", row)
@@ -2872,6 +2876,23 @@ def _get_batch_creator_name_map(repo: ProductionRepo, batch_ids: set[int]) -> di
     return creator_map
 
 
+def _get_batch_owner_name_map(repo: ProductionRepo, batch_ids: set[int]) -> dict[int, str]:
+    if not batch_ids:
+        return {}
+    if not hasattr(repo, "get_all_master_batches"):
+        return {}
+    by_record_id, by_user_id = _build_costing_user_name_indexes(repo)
+    owner_map: dict[int, str] = {}
+    for master in repo.get_all_master_batches():
+        batch_id = master.get("id")
+        if not isinstance(batch_id, int) or batch_id not in batch_ids:
+            continue
+        fields = master.get("fields", {})
+        owner_ref = fields.get("owner_user") or fields.get("created_by")
+        owner_map[batch_id] = _resolve_costing_user_name(owner_ref, by_record_id, by_user_id)
+    return owner_map
+
+
 def _get_batch_creator_user_id_map(repo: ProductionRepo, batch_ids: set[int]) -> dict[int, str]:
     if not batch_ids:
         return {}
@@ -2925,8 +2946,6 @@ def _is_batch_schedulable_for_role(repo: ProductionRepo, batch_id: int, role_nam
         if _role_matches(row_role, role_name):
             return True
     return False
-
-
 def _list_schedule_batches_for_user_role(repo: ProductionRepo, role_name: str) -> list[dict]:
     rows = repo.list_supervisor_schedule_pending_batches(0)
     eligible = [row for row in rows if any(_role_matches(role_name, candidate) for candidate in row.get("roles", []))]
@@ -3694,7 +3713,7 @@ async def _reject_ms_handoff_with_remarks(
 
     part_name = _resolve_ms_row_part_text(repo, fields)
     batch_no = str((repo.get_master_by_id(batch_id) or {}).get("fields", {}).get("batch_no") or "")
-    batch_by = _get_batch_creator_name_map(repo, {batch_id}).get(batch_id, "")
+    batch_by = _get_batch_owner_name_map(repo, {batch_id}).get(batch_id, "")
     if current_role:
         await _notify_stage_event(
             context,
@@ -3932,7 +3951,7 @@ async def _mark_ms_stage_done_pending_confirmation(repo: ProductionRepo, context
 
     part_name = _resolve_ms_row_part_text(repo, fields)
     batch_no = str((repo.get_master_by_id(batch_id) or {}).get("fields", {}).get("batch_no") or "")
-    batch_by = _get_batch_creator_name_map(repo, {batch_id}).get(batch_id, "")
+    batch_by = _get_batch_owner_name_map(repo, {batch_id}).get(batch_id, "")
     master_record = repo.get_master_by_id(batch_id) or {}
     owner_user_ids = _get_batch_owner_user_ids(repo, master_record)
     is_final_stage_handoff = bool(next_stage and next_stage == stages[-1])
@@ -4091,7 +4110,7 @@ async def advance_ms_stage(repo: ProductionRepo, context, row_id: int, updated_b
     part_name = _resolve_ms_row_part_text(repo, fields)
     master_record = repo.get_master_by_id(batch_id) or {}
     batch_no = str(master_record.get("fields", {}).get("batch_no") or "")
-    batch_by = _get_batch_creator_name_map(repo, {batch_id}).get(batch_id, "")
+    batch_by = _get_batch_owner_name_map(repo, {batch_id}).get(batch_id, "")
 
     await _notify_stage_event(
         context,
@@ -6494,5 +6513,6 @@ async def handle_production_state_text(update, context, text: str) -> bool:
         return False
 
     return False
+
 
 

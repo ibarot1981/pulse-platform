@@ -543,3 +543,45 @@ Preview updates included:
   "processed": false
 }
 ```
+
+### K8) Dual-Role Owner E2E Runner
+
+Use this for end-to-end regression of:
+- batch create
+- approval
+- stage done + handoff confirm across supervisors
+- final completion
+- notification fanout checks
+
+Script:
+- `scripts/grist/run_e2e_dual_role_owner_flow.py`
+- Interaction model:
+  - menu-driven simulation (text menus + action buttons)
+  - no hardcoded stage/approval callback payloads
+  - manager approval uses submenu when available, else approval inline button from notification
+
+Recommended strict run (creator=owner):
+- This validates whether the owner can create from menu with current primary role permissions.
+
+```powershell
+$env:PYTHONPATH='.'
+$env:PULSE_RUNTIME_MODE='TEST'
+python scripts/grist/run_e2e_dual_role_owner_flow.py --session sim-e2e-dual-role-strict --owner-telegram 8492411029 --creator-telegram 8492411029 --render
+```
+
+Fallback full-task run (creator as admin, owner dual-role user):
+- Use when owner create menu is blocked by current primary-role menu permissions.
+- Still validates owner-stage actions + handoffs + completion + notifications.
+
+```powershell
+$env:PYTHONPATH='.'
+$env:PULSE_RUNTIME_MODE='TEST'
+python scripts/grist/run_e2e_dual_role_owner_flow.py --session sim-e2e-dual-role-admin --creator-telegram 820565883 --owner-telegram 8492411029 --manager-telegram 900000004 --machine-telegram 900000006 --render
+```
+
+Key validations performed by script:
+- all `ProductBatchMS` rows for the batch reach completion (`Cutting Completed/Done/Completed`)
+- handoff confirmations are executed by next-stage supervisor actor
+- owner actor receives approval/completion notifications
+- machine-stage actor receives handoff/pending task notifications
+- only rows for the test-created batch are acted on during stage progression
