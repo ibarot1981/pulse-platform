@@ -39,6 +39,43 @@ def _parse_json(raw: str) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def _normalize_ref(value):
+    if isinstance(value, list):
+        return value[0] if value else None
+    return value
+
+
+def _safe_int(value) -> int | None:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_button_entries(buttons_json: str) -> list[tuple[str, str]]:
+    payload = _parse_json(buttons_json)
+    rows = payload.get("inline_keyboard") or payload.get("keyboard") or []
+    if not isinstance(rows, list) or not rows:
+        return []
+    entries: list[tuple[str, str]] = []
+    for row in rows:
+        if not isinstance(row, list):
+            continue
+        for button in row:
+            if not isinstance(button, dict):
+                continue
+            label = str(button.get("text") or "").strip()
+            callback = str(button.get("callback_data") or "").strip()
+            if label:
+                entries.append((label, callback))
+    return entries
+
+
+def _extract_correlation_inbox_id(payload_json: str) -> int | None:
+    payload = _parse_json(payload_json)
+    return _safe_int(payload.get("correlation_inbox_id"))
+
+
 def _format_created_at(value) -> str:
     def _resolve_preview_timezone():
         tz_name = str(PREVIEW_TIMEZONE or "Asia/Calcutta").strip() or "Asia/Calcutta"
@@ -127,11 +164,118 @@ def _buttons_html(buttons_json: str) -> str:
     return "".join(parts)
 
 
-def render_html(rows: list[dict]) -> str:
+def _truncate_middle(value: str, max_len: int = 72) -> str:
+    text = str(value or "")
+    if len(text) <= max_len:
+        return text
+    head = max_len // 2 - 2
+    tail = max_len - head - 3
+    return f"{text[:head]}...{text[-tail:]}"
+
+
+def _resolve_trigger_metadata(
+    outbox_rows: list[dict],
+    inbox_rows: list[dict],
+) -> dict[int, dict[str, str]]:
+    inbox_by_id: dict[int, dict] = {}
+    for row in inbox_rows:
+        row_id = _safe_int(row.get("id"))
+        if not isinstance(row_id, int):
+            continue
+        inbox_by_id[row_id] = row
+
+    # First outbox row id per correlation id so we can search buttons before this action.
+    correlation_first_outbox_id: dict[int, int] = {}
+    for row in outbox_rows:
+        row_id = _safe_int(row.get("id"))
+        if not isinstance(row_id, int):
+            continue
+        fields = row.get("fields", {})
+        corr_id = _extract_correlation_inbox_id(str(fields.get("payload_json") or ""))
+        if not isinstance(corr_id, int):
+            continue
+        if corr_id not in correlation_first_outbox_id:
+            correlation_first_outbox_id[corr_id] = row_id
+
+    searchable: list[dict] = []
+    for row in outbox_rows:
+        row_id = _safe_int(row.get("id"))
+        if not isinstance(row_id, int):
+            continue
+        fields = row.get("fields", {})
+        searchable.append(
+            {
+                "id": row_id,
+                "session_id": str(fields.get("session_id") or "").strip(),
+                "recipient_user_id": str(fields.get("recipient_user_id") or "").strip(),
+                "buttons": _parse_button_entries(str(fields.get("buttons_json") or "")),
+            }
+        )
+
+    def _lookup_button_label(
+        session_id: str,
+        actor_user_id: str,
+        callback_data: str,
+        cutoff_outbox_id: int,
+    ) -> str:
+        wanted_callback = str(callback_data or "").strip()
+        if not wanted_callback:
+            return ""
+        for row in reversed(searchable):
+            if int(row.get("id") or 0) >= cutoff_outbox_id:
+                continue
+            if str(row.get("session_id") or "") != session_id:
+                continue
+            if str(row.get("recipient_user_id") or "") != actor_user_id:
+                continue
+            for label, callback in row.get("buttons", []):
+                if callback == wanted_callback:
+                    return label
+        return ""
+
+    trigger_meta_by_outbox_id: dict[int, dict[str, str]] = {}
+    for row in outbox_rows:
+        outbox_id = _safe_int(row.get("id"))
+        if not isinstance(outbox_id, int):
+            continue
+        fields = row.get("fields", {})
+        corr_id = _extract_correlation_inbox_id(str(fields.get("payload_json") or ""))
+        trigger_label = "-"
+        trigger_actor = "-"
+        if isinstance(corr_id, int):
+            inbox_row = inbox_by_id.get(corr_id)
+            if isinstance(inbox_row, dict):
+                inbox_fields = inbox_row.get("fields", {})
+                trigger_actor = str(inbox_fields.get("actor_user_id") or "").strip() or "-"
+                input_type = str(inbox_fields.get("input_type") or "").strip().lower()
+                payload = str(inbox_fields.get("payload") or "").strip()
+                if input_type == "text":
+                    trigger_label = payload or "-"
+                elif input_type == "callback":
+                    session_id = str(inbox_fields.get("session_id") or "").strip()
+                    cutoff = correlation_first_outbox_id.get(corr_id, outbox_id)
+                    button_label = _lookup_button_label(session_id, trigger_actor, payload, cutoff)
+                    if button_label:
+                        trigger_label = button_label
+                    else:
+                        trigger_label = "Inline button (label unavailable)"
+                else:
+                    trigger_label = payload or "-"
+        trigger_meta_by_outbox_id[outbox_id] = {
+            "trigger_label": _truncate_middle(trigger_label),
+            "trigger_actor": trigger_actor,
+        }
+    return trigger_meta_by_outbox_id
+
+
+def render_html(rows: list[dict], inbox_rows: list[dict] | None = None) -> str:
+    inbox_rows = inbox_rows or []
+    trigger_meta_by_outbox_id = _resolve_trigger_metadata(rows, inbox_rows)
     cards: list[str] = []
     unique_users: set[str] = set()
     unique_sessions: set[str] = set()
     for row in rows:
+        outbox_id = _safe_int(row.get("id"))
         fields = row.get("fields", {})
         session_raw = str(fields.get("session_id", "")).strip()
         session = html.escape(session_raw or "-")
@@ -146,6 +290,9 @@ def render_html(rows: list[dict]) -> str:
         parse_mode = html.escape(str(fields.get("parse_mode", "")))
         text = html.escape(str(fields.get("message_text", ""))).replace("\n", "<br>")
         buttons = _buttons_html(str(fields.get("buttons_json", "")))
+        trigger_meta = trigger_meta_by_outbox_id.get(outbox_id or 0, {})
+        trigger_label = html.escape(str(trigger_meta.get("trigger_label") or "-"))
+        trigger_actor = html.escape(str(trigger_meta.get("trigger_actor") or "-"))
         unique_users.add(recipient_raw)
         if session_raw:
             unique_sessions.add(session_raw)
@@ -159,6 +306,8 @@ def render_html(rows: list[dict]) -> str:
                 <span>Event: {event_type}</span>
                 <span>Source: {source}</span>
                 <span>Parse Mode: {parse_mode or "-"}</span>
+                <span>Action By: {trigger_actor}</span>
+                <span>Triggered By: {trigger_label}</span>
                 <span>{created_at}</span>
               </div>
               <div class="bubble">{text or "&nbsp;"}</div>
@@ -368,10 +517,11 @@ def render_html(rows: list[dict]) -> str:
 def main() -> None:
     client = _build_client()
     outbox = client.get_records("Test_Outbox")
+    inbox = client.get_records("Test_Inbox")
     outbox.sort(key=lambda row: int(row.get("id") or 0))
     output = Path(os.getenv("PULSE_TEST_PREVIEW_PATH", "artifacts/test_preview/outbox_preview.html"))
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(render_html(outbox), encoding="utf-8")
+    output.write_text(render_html(outbox, inbox), encoding="utf-8")
     print(f"Wrote preview: {output}")
 
 

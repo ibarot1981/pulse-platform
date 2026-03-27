@@ -28,7 +28,7 @@ load_dotenv(REPO_ROOT / ".env")
 
 _MS_PENDING_CONFIRMATION = "Done - Pending Confirmation"
 _COMPLETE_STATUSES = {"Cutting Completed", "Done", "Completed"}
-_MY_MS_FILTER_PENDING = "Pending Handoffs"
+_MY_MS_FILTER_BATCH = "View By Batch No"
 _SCHEDULE_STATE = "awaiting_schedule_date"
 
 
@@ -36,6 +36,26 @@ def _normalize_ref(value):
     if isinstance(value, list):
         return value[0] if value else None
     return value
+
+
+def _normalize_process_seq_value(value):
+    normalized = _normalize_ref(value)
+    if isinstance(normalized, int):
+        return normalized
+    text = str(normalized or "").strip()
+    if text.isdigit():
+        return int(text)
+    return text
+
+
+def _process_seq_sort_key(process_seq_value) -> tuple[int, int | str]:
+    normalized = _normalize_process_seq_value(process_seq_value)
+    if isinstance(normalized, int):
+        return (0, normalized)
+    text = str(normalized or "").strip()
+    if text.isdigit():
+        return (0, int(text))
+    return (1, text)
 
 
 def _norm_role(value: str) -> str:
@@ -167,6 +187,34 @@ def _latest_text_for_actor(test_client: GristClient, session: str, actor: str) -
     return str(latest.get("fields", {}).get("message_text") or "")
 
 
+def _session_activity_counts(test_client: GristClient, session: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for table in ("Test_Inbox", "Test_Outbox", "Test_UserContext", "Test_RunLog"):
+        rows = _rows_for_session(test_client.get_records(table), session)
+        counts[table] = len(rows)
+    return counts
+
+
+def _recent_actor_outbox_summary(test_client: GristClient, session: str, actor: str, limit: int = 8) -> str:
+    rows = _rows_for_session(test_client.get_records("Test_Outbox"), session)
+    actor_text = str(actor).strip()
+    filtered = [row for row in rows if str(row.get("fields", {}).get("recipient_user_id", "")).strip() == actor_text]
+    filtered.sort(key=lambda row: int(row.get("id") or 0))
+    if not filtered:
+        return "<no outbox rows for actor>"
+    tail = filtered[-max(1, int(limit)) :]
+    lines: list[str] = []
+    for row in tail:
+        fields = row.get("fields", {})
+        text = str(fields.get("message_text") or "").replace("\n", " | ").strip()
+        if len(text) > 220:
+            text = text[:220] + "..."
+        lines.append(
+            f"- id={row.get('id')} event={fields.get('event_type')} text={text}"
+        )
+    return "\n".join(lines)
+
+
 def _latest_message_row(rows: list[dict]) -> dict | None:
     for row in reversed(rows):
         if str(row.get("fields", {}).get("event_type") or "") == "message":
@@ -203,6 +251,64 @@ def _message_texts(rows: list[dict]) -> list[str]:
         if text:
             texts.append(text)
     return texts
+
+
+def _rows_contain_batch_list_view(rows: list[dict]) -> bool:
+    for text in _message_texts(rows):
+        normalized = text.casefold()
+        if "choose entries using:" in normalized and "quick actions:" in normalized:
+            return True
+    return False
+
+
+def _extract_batch_overview_text(rows: list[dict]) -> str:
+    for text in _message_texts(rows):
+        normalized = text.casefold()
+        if "batch overview" in normalized and "flow snapshot" in normalized:
+            return text
+    return _latest_message_text(rows)
+
+
+def _flow_candidates_from_overview(text: str, desired_action: str) -> list[int]:
+    lines = [line.strip() for line in str(text or "").splitlines()]
+    flows: list[tuple[int, str]] = []
+    for idx, line in enumerate(lines):
+        match = re.match(r"^(\d+)\.\s+.+$", line)
+        if not match:
+            continue
+        flow_no = int(match.group(1))
+        stage_line = ""
+        for next_idx in range(idx + 1, len(lines)):
+            candidate = lines[next_idx].strip()
+            if not candidate:
+                continue
+            stage_line = candidate
+            break
+        flows.append((flow_no, stage_line))
+    if not flows:
+        return [1]
+
+    scored: list[tuple[int, int]] = []
+    for flow_no, stage_line in flows:
+        stage_norm = stage_line.casefold()
+        score = 0
+        if desired_action == "confirm":
+            if "🤝" in stage_line or "hand-off pending" in stage_norm:
+                score += 10
+            if "🔄" in stage_line or "running" in stage_norm:
+                score += 1
+        else:
+            if "🔄" in stage_line or "running" in stage_norm:
+                score += 10
+            if "🤝" in stage_line or "hand-off pending" in stage_norm:
+                score += 1
+        scored.append((flow_no, score))
+
+    scored.sort(key=lambda item: (-item[1], item[0]))
+    ordered = [flow_no for flow_no, _ in scored]
+    if not ordered:
+        return [1]
+    return ordered
 
 
 def _pick_label(
@@ -253,13 +359,13 @@ def _find_batch_created_no_from_outbox(test_client: GristClient, session: str, a
         if str(fields.get("recipient_user_id", "")).strip() != actor_text:
             continue
         text = str(fields.get("message_text") or "")
-        if not text.startswith("Batch created:"):
+        if "Batch created:" not in text:
             continue
         return text.split("Batch created:", 1)[1].strip().splitlines()[0].strip()
     return ""
 
 
-def _find_batch_id_by_no(costing_client: GristClient, batch_no: str) -> int | None:
+def _find_batch_id_by_no(costing_client: GristClient, batch_no: str, *, min_id: int | None = None) -> int | None:
     matched: list[int] = []
     for row in costing_client.get_records("ProductBatchMaster"):
         if str(row.get("fields", {}).get("batch_no", "")).strip() != batch_no:
@@ -267,6 +373,11 @@ def _find_batch_id_by_no(costing_client: GristClient, batch_no: str) -> int | No
         rec_id = row.get("id")
         if isinstance(rec_id, int):
             matched.append(rec_id)
+    if isinstance(min_id, int):
+        newer = [rec_id for rec_id in matched if rec_id > min_id]
+        if newer:
+            return max(newer)
+        return None
     if not matched:
         return None
     return max(matched)
@@ -407,6 +518,22 @@ def _is_complete_status(status: str) -> bool:
     return str(status or "").strip() in _COMPLETE_STATUSES
 
 
+def _resolve_flow_number_for_row(batch_rows: list[dict], row_id: int) -> int | None:
+    if not isinstance(row_id, int) or row_id <= 0:
+        return None
+    ordered = list(batch_rows)
+    ordered.sort(
+        key=lambda row: (
+            _process_seq_sort_key(row.get("fields", {}).get("process_seq")),
+            int(row.get("id") or 0),
+        )
+    )
+    for idx, row in enumerate(ordered, start=1):
+        if int(row.get("id") or 0) == row_id:
+            return idx
+    return None
+
+
 def _find_option_number_for_batch(text: str, batch_no: str) -> int | None:
     wanted = str(batch_no or "").strip().casefold()
     if not wanted:
@@ -420,84 +547,6 @@ def _find_option_number_for_batch(text: str, batch_no: str) -> int | None:
         if leading == wanted or wanted in candidate.casefold():
             return int(match.group(1))
     return None
-
-
-def _parse_ms_entry_rows(text: str) -> list[tuple[int, str]]:
-    entries: list[tuple[int, str]] = []
-    for line in str(text or "").splitlines():
-        match = re.match(r"^\s*(\d+)\.\s+(.+)$", line.strip())
-        if not match:
-            continue
-        idx = int(match.group(1))
-        body = match.group(2)
-        status = ""
-        parts = [part.strip() for part in body.split("|")]
-        for part in parts:
-            if part.casefold().startswith("status:"):
-                status = part.split(":", 1)[1].strip()
-                break
-        entries.append((idx, status))
-    return entries
-
-
-def _parse_ms_entry_rows_with_batch(text: str) -> list[dict]:
-    entries: list[dict] = []
-    current_batch_no = ""
-    for raw_line in str(text or "").splitlines():
-        line = raw_line.strip()
-        normalized = _norm_label(line)
-        if "batch no" in normalized and ":" in line:
-            marker = line.casefold().find("batch no:")
-            if marker >= 0:
-                current_batch_no = line[marker + len("batch no:") :].strip()
-            continue
-        match = re.match(r"^\s*(\d+)\.\s+(.+)$", line)
-        if not match:
-            continue
-        idx = int(match.group(1))
-        body = match.group(2)
-        status = ""
-        parts = [part.strip() for part in body.split("|")]
-        for part in parts:
-            if part.casefold().startswith("status:"):
-                status = part.split(":", 1)[1].strip()
-                break
-        entries.append({"index": idx, "status": status, "batch_no": current_batch_no})
-    return entries
-
-
-def _choose_ms_entry_index(text: str, desired_action: str, batch_no: str) -> int | None:
-    rows = _parse_ms_entry_rows_with_batch(text)
-    if not rows:
-        return None
-    wanted_batch = str(batch_no or "").strip().casefold()
-    if wanted_batch:
-        rows = [row for row in rows if str(row.get("batch_no", "")).strip().casefold() == wanted_batch]
-    if not rows:
-        return None
-
-    if desired_action == "confirm":
-        for row in rows:
-            idx = int(row.get("index") or 0)
-            status = str(row.get("status") or "")
-            norm = status.casefold()
-            if "pending confirmation" in norm and "action: accept/reject" in norm:
-                return idx
-        for row in rows:
-            idx = int(row.get("index") or 0)
-            status = str(row.get("status") or "")
-            if "pending confirmation" in status.casefold():
-                return idx
-        first = int(rows[0].get("index") or 0)
-        return first or None
-
-    for row in rows:
-        idx = int(row.get("index") or 0)
-        status = str(row.get("status") or "")
-        if "pending confirmation" not in status.casefold():
-            return idx
-    first = int(rows[0].get("index") or 0)
-    return first or None
 
 
 def _contains_any(haystack: str, needles: tuple[str, ...]) -> bool:
@@ -514,7 +563,6 @@ def _assert_no_auth_error_text(text: str, actor: str) -> None:
         "not waiting for",
         "not found",
         "you do not have access",
-        "please use the menu buttons",
     )
     for token in error_tokens:
         if token in lowered:
@@ -648,31 +696,90 @@ def _open_manage_production(driver: TestSessionDriver, test_client: GristClient,
     return rows
 
 
-def _open_my_ms_jobs_pending(
+def _open_my_ms_jobs_batch_view(
     driver: TestSessionDriver,
     test_client: GristClient,
     session: str,
     actor: str,
+    batch_no: str,
 ) -> list[dict]:
-    manage_rows = _open_manage_production(driver, test_client, session, actor)
-    labels = _button_labels_from_rows(manage_rows)
-    my_jobs_label = _pick_label(
-        labels,
-        exact=("My MS Jobs",),
-        token_groups=(("my", "ms", "jobs"),),
-    ) or "My MS Jobs"
-    _, rows = driver.send_text(actor, my_jobs_label)
-    _assert_no_auth_error_rows(test_client, session, actor, rows)
+    for attempt in range(4):
+        manage_rows = _open_manage_production(driver, test_client, session, actor)
+        labels = _button_labels_from_rows(manage_rows)
+        my_jobs_label = _pick_label(
+            labels,
+            exact=("My MS Jobs",),
+            token_groups=(("my", "ms", "jobs"),),
+        ) or "My MS Jobs"
+        _, rows = driver.send_text(actor, my_jobs_label)
+        _assert_no_auth_error_rows(test_client, session, actor, rows)
 
-    filter_labels = _button_labels_from_rows(rows)
-    pending_label = _pick_label(
-        filter_labels,
-        exact=(_MY_MS_FILTER_PENDING,),
-        token_groups=(("pending", "handoffs"),),
-    ) or _MY_MS_FILTER_PENDING
-    _, rows = driver.send_text(actor, pending_label)
-    _assert_no_auth_error_rows(test_client, session, actor, rows)
-    return rows
+        filter_labels = _button_labels_from_rows(rows)
+        batch_filter_label = _pick_label(
+            filter_labels,
+            exact=(_MY_MS_FILTER_BATCH,),
+            token_groups=(("view", "batch", "no"), ("batch", "no")),
+        ) or _MY_MS_FILTER_BATCH
+        _, rows = driver.send_text(actor, batch_filter_label)
+        _assert_no_auth_error_rows(test_client, session, actor, rows)
+
+        selected = False
+        # Batch selector is paginated; pick the target batch.
+        for _ in range(30):
+            selector_text = ""
+            for candidate in _message_texts(rows):
+                if _find_option_number_for_batch(candidate, batch_no) is not None:
+                    selector_text = candidate
+                    break
+                if "select batch no:" in candidate.casefold():
+                    selector_text = candidate
+            if not selector_text:
+                selector_text = _latest_message_text(rows)
+            if "no batch entries available for your ms jobs".casefold() in selector_text.casefold():
+                break
+            pick_number = _find_option_number_for_batch(selector_text, batch_no)
+            if isinstance(pick_number, int):
+                _, rows = driver.send_text(actor, str(pick_number))
+                _assert_no_auth_error_rows(test_client, session, actor, rows)
+                selected = True
+                break
+            next_label = _pick_label(
+                _button_labels_from_rows(rows),
+                token_groups=(("next",),),
+            )
+            if not next_label:
+                break
+            _, rows = driver.send_text(actor, next_label)
+            _assert_no_auth_error_rows(test_client, session, actor, rows)
+
+        if not selected:
+            if attempt < 3:
+                time.sleep(1.0)
+                continue
+            raise RuntimeError(f"Batch {batch_no} not found in 'View By Batch No' selector for actor {actor}.")
+
+        # Expected human path: selecting the batch should show Batch Overview directly.
+        overview_text = _extract_batch_overview_text(rows)
+        if "batch overview" in overview_text.casefold() and "select flow number" in overview_text.casefold():
+            return rows
+
+        # If UI lands in list view, jump back to overview via quick action.
+        if _rows_contain_batch_list_view(rows):
+            _, rows = driver.send_text(actor, "B1")
+            _assert_no_auth_error_rows(test_client, session, actor, rows)
+            overview_text = _extract_batch_overview_text(rows)
+            if "batch overview" in overview_text.casefold() and "select flow number" in overview_text.casefold():
+                return rows
+
+        if attempt < 3:
+            time.sleep(1.0)
+            continue
+        raise RuntimeError(
+            f"Unable to open Batch Overview after selecting batch {batch_no} for actor {actor}.\n"
+            f"Latest:\n{_latest_message_text(rows)}"
+        )
+
+    raise RuntimeError(f"Unable to open Batch Overview for batch {batch_no} and actor {actor}.")
 
 
 def _clear_schedule_prompt_if_needed(
@@ -698,6 +805,7 @@ def _evaluate_ms_action_rows(rows: list[dict]) -> str:
             "current stage marked done",
             "stage handover confirmed",
             "marked ",
+            "scheduled ",
             "schedule selected batch",
             "batch scheduled",
             "date scheduled",
@@ -722,7 +830,6 @@ def _evaluate_ms_action_rows(rows: list[dict]) -> str:
             "could not",
             "ms row not found",
             "you do not have access",
-            "please use the menu buttons",
             "unsupported action",
         ),
     ):
@@ -737,59 +844,54 @@ def _perform_ms_action_via_menus(
     actor: str,
     desired_action: str,
     batch_no: str,
+    preferred_flow_number: int | None,
     schedule_date_text: str,
 ) -> str:
-    list_rows = _open_my_ms_jobs_pending(driver, test_client, session, actor)
-    list_text = ""
-    for candidate in _message_texts(list_rows):
-        if _parse_ms_entry_rows(candidate):
-            list_text = candidate
-            break
-    if not list_text:
-        list_text = _latest_message_text(list_rows)
-    if "no pending handoff or pending completion jobs in your queue".casefold() in list_text.casefold():
-        raise RuntimeError(f"Actor {actor} has no actionable rows under Pending Handoffs.")
+    # Human path: Batch Overview -> flow number -> action button.
+    overview_rows = _open_my_ms_jobs_batch_view(driver, test_client, session, actor, batch_no)
+    overview_text = _extract_batch_overview_text(overview_rows)
+    flow_candidates = _flow_candidates_from_overview(overview_text, desired_action)
+    if isinstance(preferred_flow_number, int) and preferred_flow_number > 0:
+        flow_candidates = [preferred_flow_number] + [num for num in flow_candidates if num != preferred_flow_number]
 
-    entry_index = _choose_ms_entry_index(list_text, desired_action, batch_no)
-    if not isinstance(entry_index, int):
-        raise RuntimeError(f"Unable to parse MS list entries for actor {actor}. Latest view:\n{list_text}")
-
-    _, action_menu_rows = driver.send_text(actor, str(entry_index))
-    _assert_no_auth_error_rows(test_client, session, actor, action_menu_rows)
-    action_labels = _button_labels_from_rows(action_menu_rows)
-
-    candidate_groups: list[tuple[str, tuple[str, ...]]] = []
     if desired_action == "confirm":
-        candidate_groups = [
-            ("confirm", ("accept", "handoff")),
-            ("done", ("mark", "done")),
+        button_candidates = [
+            ("confirm", ("Confirm Stage Handover",), (("confirm", "stage", "handover"), ("confirm", "handover"))),
+            ("done", ("Current Stage Done",), (("current", "stage", "done"), ("stage", "done"))),
         ]
     else:
-        candidate_groups = [
-            ("done", ("mark", "done")),
-            ("confirm", ("accept", "handoff")),
+        button_candidates = [
+            ("done", ("Current Stage Done",), (("current", "stage", "done"), ("stage", "done"))),
+            ("confirm", ("Confirm Stage Handover",), (("confirm", "stage", "handover"), ("confirm", "handover"))),
         ]
 
-    tried_labels: list[str] = []
-    for resolved_action, tokens in candidate_groups:
-        action_label = _pick_label(action_labels, token_groups=(tokens,))
-        if not action_label or action_label in tried_labels:
-            continue
-        tried_labels.append(action_label)
+    for flow_no in flow_candidates:
+        _, flow_rows = driver.send_text(actor, str(flow_no))
+        _assert_no_auth_error_rows(test_client, session, actor, flow_rows)
 
-        _, action_rows = driver.send_text(actor, action_label)
-        _clear_schedule_prompt_if_needed(driver, test_client, session, actor, schedule_date_text)
-        outcome = _evaluate_ms_action_rows(action_rows)
-        if outcome == "success":
-            return resolved_action
-        if outcome == "fatal":
-            text = _all_message_text(action_rows)
-            raise RuntimeError(f"MS action failed for actor {actor} using '{action_label}'.\n{text}")
+        for resolved_action, exact_labels, token_groups in button_candidates:
+            _, callback_data = _pick_callback_from_rows(
+                flow_rows,
+                exact=exact_labels,
+                token_groups=token_groups,
+            )
+            if not callback_data:
+                continue
+            _, action_rows = driver.send_callback(actor, callback_data)
+            _clear_schedule_prompt_if_needed(driver, test_client, session, actor, schedule_date_text)
+            outcome = _evaluate_ms_action_rows(action_rows)
+            if outcome == "success":
+                return resolved_action
+            if outcome == "fatal":
+                text = _all_message_text(action_rows)
+                raise RuntimeError(
+                    f"MS action failed for actor {actor} using flow {flow_no} callback '{callback_data}'.\n{text}"
+                )
 
-    details = _all_message_text(action_menu_rows) or _latest_text_for_actor(test_client, session, actor)
+    details = _latest_text_for_actor(test_client, session, actor)
     raise RuntimeError(
         f"Could not complete desired MS action for actor {actor}. "
-        f"Desired={desired_action}, action labels={action_labels}, menu:\n{details}"
+        f"Desired={desired_action}, flow_candidates={flow_candidates}, latest:\n{details}"
     )
 
 
@@ -824,6 +926,16 @@ def main() -> None:
         session = f"{session}-{int(time.time())}"
 
     test_client = _build_test_client()
+    if not args.refresh_session:
+        existing = _session_activity_counts(test_client, session)
+        existing_total = sum(existing.values())
+        if existing_total > 0:
+            old_session = session
+            session = f"{session}-{int(time.time())}"
+            print(
+                f"Session '{old_session}' has existing runtime rows {existing}. "
+                f"Auto-switching to fresh session '{session}'."
+            )
     driver = TestSessionDriver(test_client, session)
     pulse_client = _build_pulse_client()
     costing_client = _build_costing_client()
@@ -863,38 +975,70 @@ def main() -> None:
     _, rows = driver.send_text(creator_actor, str(args.batch_type))
     _, rows = driver.send_text(creator_actor, "Yes")
 
-    latest_owner_text = _latest_message_text(rows) or _latest_text_for_actor(test_client, session, creator_actor)
-    if "Select Batch Owner" in latest_owner_text:
-        options = _parse_numbered_options(latest_owner_text)
-        picked = None
-        owner_user_id = str(args.owner_user_id or "").strip().casefold()
-        owner_name = str(args.owner_name or "").strip().casefold()
-        for idx, label in options.items():
-            label_norm = label.casefold()
-            if owner_user_id and owner_user_id in label_norm:
-                picked = idx
-                break
-            if owner_name and owner_name in label_norm:
-                picked = idx
-                break
-        if picked is None:
-            raise RuntimeError(f"Owner selection prompt shown, but owner not found in options: {options}")
-        _, rows = driver.send_text(creator_actor, str(picked))
-
-    latest_owner_text = _latest_message_text(rows) or _latest_text_for_actor(test_client, session, creator_actor)
-    if "Select Batch Notifiers" in latest_owner_text:
-        _, rows = driver.send_text(creator_actor, str(args.notifiers))
+    owner_user_id = str(args.owner_user_id or "").strip().casefold()
+    owner_name = str(args.owner_name or "").strip().casefold()
+    for _ in range(30):
+        latest_owner_text = _latest_message_text(rows) or _latest_text_for_actor(test_client, session, creator_actor)
+        if "Batch created:" in latest_owner_text:
+            break
+        if "Select Batch Owner" in latest_owner_text:
+            options = _parse_numbered_options(latest_owner_text)
+            picked = None
+            for idx, label in options.items():
+                label_norm = label.casefold()
+                if owner_user_id and owner_user_id in label_norm:
+                    picked = idx
+                    break
+                if owner_name and owner_name in label_norm:
+                    picked = idx
+                    break
+            if picked is None:
+                raise RuntimeError(f"Owner selection prompt shown, but owner not found in options: {options}")
+            _, rows = driver.send_text(creator_actor, str(picked))
+            continue
+        if "Select Batch Notifiers" in latest_owner_text:
+            _, rows = driver.send_text(creator_actor, str(args.notifiers))
+            continue
+        if "Select Yes or No" in latest_owner_text:
+            yes_label = (
+                _pick_label(
+                    _button_labels_from_rows(rows),
+                    exact=("Yes",),
+                    token_groups=(("yes",),),
+                )
+                or "Yes"
+            )
+            _, rows = driver.send_text(creator_actor, yes_label)
+            continue
+        if "Select Batch Type" in latest_owner_text:
+            _, rows = driver.send_text(creator_actor, str(args.batch_type))
+            continue
+        if "Confirm Batch:" in latest_owner_text:
+            _, rows = driver.send_text(creator_actor, "Yes")
+            continue
+        time.sleep(0.2)
+        latest_row = _latest_outbox_for_actor(test_client, session, creator_actor)
+        if latest_row:
+            rows = [latest_row]
 
     _assert_no_auth_error_rows(test_client, session, creator_actor, rows)
 
     batch_no = _find_batch_created_no_from_outbox(test_client, session, creator_actor)
-    batch_id = _find_batch_id_by_no(costing_client, batch_no) if batch_no else None
+    batch_id = (
+        _find_batch_id_by_no(costing_client, batch_no, min_id=before_max_batch_id)
+        if batch_no
+        else None
+    )
     if batch_id is None:
         max_now = _max_batch_id(costing_client)
         if max_now > before_max_batch_id:
             batch_id = max_now
     if not isinstance(batch_id, int):
-        raise RuntimeError("Failed to resolve created batch id from outbox/ProductBatchMaster.")
+        creator_tail = _recent_actor_outbox_summary(test_client, session, creator_actor, limit=10)
+        raise RuntimeError(
+            "Failed to resolve created batch id from outbox/ProductBatchMaster.\n"
+            f"Recent creator outbox rows:\n{creator_tail}"
+        )
     print(f"Created batch id={batch_id} batch_no={batch_no or '-'}")
 
     # 2) Approve from manager using Pending Approvals menu flow.
@@ -1010,6 +1154,9 @@ def main() -> None:
             role_name = _resolve_stage_role(stage_role_map, process_seq, current_stage)
             desired_action = "done"
 
+        row_id = int(target.get("id") or 0)
+        preferred_flow_number = _resolve_flow_number_for_row(rows, row_id)
+
         role_norm = _norm_role(role_name)
         if "production supervisor" in role_norm:
             actor = owner_actor
@@ -1030,6 +1177,7 @@ def main() -> None:
             actor,
             desired_action,
             batch_no,
+            preferred_flow_number,
             str(args.schedule_date),
         )
         action_log.append((actor, desired_action, resolved_action))

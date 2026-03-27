@@ -559,6 +559,7 @@ Script:
   - menu-driven simulation (text menus + action buttons)
   - no hardcoded stage/approval callback payloads
   - manager approval uses submenu when available, else approval inline button from notification
+  - supervisor stage actions route through `My MS Jobs -> View By Batch No`
 
 Recommended strict run (creator=owner):
 - This validates whether the owner can create from menu with current primary role permissions.
@@ -585,3 +586,58 @@ Key validations performed by script:
 - owner actor receives approval/completion notifications
 - machine-stage actor receives handoff/pending task notifications
 - only rows for the test-created batch are acted on during stage progression
+
+Contract regression test for menu path:
+- `tests/test_dual_role_owner_flow_contract.py`
+- Ensures E2E helper path does not use `View This Batch`; expected path is Batch Overview -> flow number -> inline action.
+
+Run it whenever editing:
+- `scripts/grist/run_e2e_dual_role_owner_flow.py`
+- `pulse/integrations/production.py` menu text/flow that affects My MS Jobs screens
+
+```powershell
+$env:PYTHONPATH='.'
+python -m pytest tests/test_dual_role_owner_flow_contract.py -q
+```
+
+### K9) Batch + Runtime Cleanup Utility
+
+Use this when you want to clear only simulation/batch workflow data without touching any master/setup tables.
+
+Script:
+- `scripts/grist/cleanup_batch_runtime_data.py`
+
+Deletes rows only from this fixed allow-list:
+- Costing doc: `ProductBatchMaster`, `ProductBatchMS`, `BatchStatusHistory`
+- Pulse doc: `Activity_Log`, `Reminder_Log`
+- Runtime doc (`PULSE_TEST_DOC_ID` by default): `Test_Inbox`, `Test_Outbox`, `Test_UserContext`, `Test_RunLog`, `Test_Attachments`
+
+Dry-run first (recommended):
+
+```powershell
+$env:PYTHONPATH='.'
+python scripts/grist/cleanup_batch_runtime_data.py
+```
+
+Apply deletion:
+
+```powershell
+$env:PYTHONPATH='.'
+python scripts/grist/cleanup_batch_runtime_data.py --apply
+```
+
+Optional runtime override:
+
+```powershell
+$env:PYTHONPATH='.'
+python scripts/grist/cleanup_batch_runtime_data.py --apply --runtime-doc-id "<doc_id>" --runtime-api-key "<api_key>"
+```
+
+Safety notes:
+- Script does not discover/expand to other tables.
+- Only listed tables are touched.
+- If a required table is missing, the script fails by default (use `--allow-missing-table` only when intentional).
+- Detailed per-entry deletion log is written to `artifacts/logs/cleanup_batch_runtime_data_<timestamp>.log` (or `--log-file` path).
+- Log includes a `Batch Summary` section:
+  - dry-run: `Batch No - would delete (...)`
+  - apply: `Batch No - deleted (...)`

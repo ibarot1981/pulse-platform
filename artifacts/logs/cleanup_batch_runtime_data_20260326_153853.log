@@ -1,0 +1,35 @@
+Cleanup Run Timestamp: 2026-03-26 15:38:53
+Mode: DRY-RUN
+Scope lock: deletes rows only from the fixed allow-listed tables in this script.
+
+[COSTING] doc=hk5egrPh16UA3RkuzCLSDW
+ProductBatchMS: would delete 32 row(s).
+BatchStatusHistory: would delete 204 row(s).
+ProductBatchMaster: would delete 13 row(s).
+
+[PULSE] doc=dBAMmedPXsrYhGzsZS2qR6
+Activity_Log: would delete 495 row(s).
+Reminder_Log: would delete 0 row(s).
+
+[RUNTIME] doc=tSFZW3ybtD46ug2q76iMML
+Test_Inbox: would delete 721 row(s).
+Test_Outbox: would delete 1788 row(s).
+Test_UserContext: would delete 34 row(s).
+Test_RunLog: would delete 1278 row(s).
+Test_Attachments: would delete 0 row(s).
+
+Batch Summary
+MAR26-S1KHFL-BASE-MCS-001 - would delete (BatchStatusHistory=36, ProductBatchMS=4, ProductBatchMaster=1)
+MAR26-S1KHFL-BASE-MCS-002 - would delete (BatchStatusHistory=47, ProductBatchMS=4, ProductBatchMaster=1)
+MAR26-S1KHFL-BASE-MCS-003 - would delete (BatchStatusHistory=17, ProductBatchMS=4, ProductBatchMaster=3)
+MAR26-S1KHFL-BASE-MCS-004 - would delete (BatchStatusHistory=34, ProductBatchMS=4, ProductBatchMaster=1)
+MAR26-S1KHFL-BASE-MCS-005 - would delete (BatchStatusHistory=1, ProductBatchMaster=1)
+MAR26-S1KHFL-BASE-MCS-006 - would delete (BatchStatusHistory=1, ProductBatchMaster=1)
+MAR26-S1KHFL-BASE-MCS-007 - would delete (BatchStatusHistory=4, ProductBatchMS=4, ProductBatchMaster=1)
+MAR26-S1KHFL-BASE-MCS-008 - would delete (BatchStatusHistory=1, ProductBatchMaster=1)
+MAR26-S1KHFL-BASE-MCS-009 - would delete (BatchStatusHistory=28, ProductBatchMS=4, ProductBatchMaster=1)
+MAR26-S1KHFL-BASE-MCS-010 - would delete (BatchStatusHistory=9, ProductBatchMS=4, ProductBatchMaster=1)
+MAR26-S1KHFL-BASE-MCS-011 - would delete (BatchStatusHistory=26, ProductBatchMS=4, ProductBatchMaster=1)
+
+Dry-run complete. 4565 row(s) would be deleted from allow-listed tables.
+Re-run with --apply to execute.

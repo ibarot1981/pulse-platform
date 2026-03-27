@@ -1,3 +1,4 @@
+-- Reminders Logic
 give me a robust long term design option where reminders can be sent to intended receipients only. 
 Must ensure, if task, for which reminder is being sent, is completed, then reminders should stop. e.g. if reminder is sent to production supervisor : sanjay Rohit for stage handoff pending, then once handoff is done, reminders shoud stop. Also design this such that it is possible that all these are async events and tables are updated and accordingly reminders list is calculated. 
 I want a configurale table where i can set reminder interval for all stages for which reminders are required. E.g. for every user, for stage handoff reminder, this interval applies. Likewise, we should send reminders for Stage Pending i.e. if current supervisor has a stage pending and has no update, then reminder should be sent as per stage pending reminder interval.
@@ -13,4 +14,11 @@ once approval is given for this new batch, this reminder should stop. So giving 
 Once approval is given, first stage task is assigned. Now each supervisor may get tens of tasks for each batch.
 So per batch, one reminder must go with summary of tasks pending on the batch.
 
+-- Flow ID
+Create a flow id for each flows per batch that are created.
+So ideally, for each batch, thre should be a flow number.
+we need to workout if flow number should be unique or same for each flow.
+
+-- Advance requirement for future batches
+create quantities for items which are divided across multiple batches.
 
