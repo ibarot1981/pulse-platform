@@ -1,0 +1,160 @@
+Cleanup Run Timestamp: 2026-04-06 15:38:03
+Mode: APPLY
+Scope lock: deletes rows only from the fixed allow-listed tables in this script.
+
+[COSTING] doc=hk5egrPh16UA3RkuzCLSDW
+ProductBatchMS: DELETE endpoint unavailable on this server; using /apply BulkRemoveRecord fallback.
+ProductBatchMS : entry deleted (record_id=1, batch_no=APR26-S1KHFL-BASE-MCS-001)
+ProductBatchMS : entry deleted (record_id=2, batch_no=APR26-S1KHFL-BASE-MCS-001)
+ProductBatchMS : entry deleted (record_id=3, batch_no=APR26-S1KHFL-BASE-MCS-001)
+ProductBatchMS : entry deleted (record_id=4, batch_no=APR26-S1KHFL-BASE-MCS-001)
+ProductBatchMS: deleted 4 row(s); remaining 0.
+BatchStatusHistory: DELETE endpoint unavailable on this server; using /apply BulkRemoveRecord fallback.
+BatchStatusHistory : entry deleted (record_id=1, batch_no=APR26-S1KHFL-BASE-MCS-001)
+BatchStatusHistory : entry deleted (record_id=2, batch_no=APR26-S1KHFL-BASE-MCS-001)
+BatchStatusHistory : entry deleted (record_id=3, batch_no=APR26-S1KHFL-BASE-MCS-001)
+BatchStatusHistory : entry deleted (record_id=4, batch_no=APR26-S1KHFL-BASE-MCS-001)
+BatchStatusHistory : entry deleted (record_id=5, batch_no=APR26-S1KHFL-BASE-MCS-001)
+BatchStatusHistory : entry deleted (record_id=6, batch_no=APR26-S1KHFL-BASE-MCS-001)
+BatchStatusHistory : entry deleted (record_id=7, batch_no=APR26-S1KHFL-BASE-MCS-001)
+BatchStatusHistory : entry deleted (record_id=8, batch_no=APR26-S1KHFL-BASE-MCS-001)
+BatchStatusHistory: deleted 8 row(s); remaining 0.
+ProductBatchMaster: DELETE endpoint unavailable on this server; using /apply BulkRemoveRecord fallback.
+ProductBatchMaster : entry deleted (record_id=1, batch_no=APR26-S1KHFL-BASE-MCS-001)
+ProductBatchMaster: deleted 1 row(s); remaining 0.
+
+[PULSE] doc=dBAMmedPXsrYhGzsZS2qR6
+Activity_Log: DELETE endpoint unavailable on this server; using /apply BulkRemoveRecord fallback.
+Activity_Log : entry deleted (record_id=1)
+Activity_Log : entry deleted (record_id=2)
+Activity_Log : entry deleted (record_id=3)
+Activity_Log : entry deleted (record_id=4)
+Activity_Log : entry deleted (record_id=5)
+Activity_Log : entry deleted (record_id=6)
+Activity_Log : entry deleted (record_id=7)
+Activity_Log : entry deleted (record_id=8)
+Activity_Log : entry deleted (record_id=9)
+Activity_Log : entry deleted (record_id=10)
+Activity_Log : entry deleted (record_id=11)
+Activity_Log : entry deleted (record_id=12)
+Activity_Log : entry deleted (record_id=13)
+Activity_Log: deleted 13 row(s); remaining 0.
+Reminder_Log: deleted 0 row(s); remaining 0.
+
+[RUNTIME] doc=tSFZW3ybtD46ug2q76iMML
+Test_Inbox: DELETE endpoint unavailable on this server; using /apply BulkRemoveRecord fallback.
+Test_Inbox : entry deleted (record_id=1)
+Test_Inbox : entry deleted (record_id=2)
+Test_Inbox : entry deleted (record_id=3)
+Test_Inbox : entry deleted (record_id=4)
+Test_Inbox : entry deleted (record_id=5)
+Test_Inbox : entry deleted (record_id=6)
+Test_Inbox : entry deleted (record_id=7)
+Test_Inbox : entry deleted (record_id=8)
+Test_Inbox : entry deleted (record_id=9)
+Test_Inbox : entry deleted (record_id=10)
+Test_Inbox : entry deleted (record_id=11)
+Test_Inbox : entry deleted (record_id=12)
+Test_Inbox : entry deleted (record_id=13)
+Test_Inbox : entry deleted (record_id=14)
+Test_Inbox : entry deleted (record_id=15)
+Test_Inbox : entry deleted (record_id=16)
+Test_Inbox : entry deleted (record_id=17)
+Test_Inbox : entry deleted (record_id=18)
+Test_Inbox : entry deleted (record_id=19)
+Test_Inbox : entry deleted (record_id=20)
+Test_Inbox : entry deleted (record_id=21)
+Test_Inbox : entry deleted (record_id=22)
+Test_Inbox : entry deleted (record_id=23)
+Test_Inbox : entry deleted (record_id=24)
+Test_Inbox : entry deleted (record_id=25)
+Test_Inbox : entry deleted (record_id=26)
+Test_Inbox: deleted 26 row(s); remaining 0.
+Test_Outbox: DELETE endpoint unavailable on this server; using /apply BulkRemoveRecord fallback.
+Test_Outbox : entry deleted (record_id=1)
+Test_Outbox : entry deleted (record_id=2)
+Test_Outbox : entry deleted (record_id=3)
+Test_Outbox : entry deleted (record_id=4)
+Test_Outbox : entry deleted (record_id=5)
+Test_Outbox : entry deleted (record_id=6)
+Test_Outbox : entry deleted (record_id=7)
+Test_Outbox : entry deleted (record_id=8)
+Test_Outbox : entry deleted (record_id=9)
+Test_Outbox : entry deleted (record_id=10)
+Test_Outbox : entry deleted (record_id=11)
+Test_Outbox : entry deleted (record_id=12)
+Test_Outbox : entry deleted (record_id=13)
+Test_Outbox : entry deleted (record_id=14)
+Test_Outbox : entry deleted (record_id=15)
+Test_Outbox : entry deleted (record_id=16)
+Test_Outbox : entry deleted (record_id=17)
+Test_Outbox : entry deleted (record_id=18)
+Test_Outbox : entry deleted (record_id=19)
+Test_Outbox : entry deleted (record_id=20)
+Test_Outbox : entry deleted (record_id=21)
+Test_Outbox : entry deleted (record_id=22)
+Test_Outbox : entry deleted (record_id=23)
+Test_Outbox : entry deleted (record_id=24)
+Test_Outbox : entry deleted (record_id=25)
+Test_Outbox : entry deleted (record_id=26)
+Test_Outbox : entry deleted (record_id=27)
+Test_Outbox : entry deleted (record_id=28)
+Test_Outbox : entry deleted (record_id=29)
+Test_Outbox : entry deleted (record_id=30)
+Test_Outbox : entry deleted (record_id=31)
+Test_Outbox : entry deleted (record_id=32)
+Test_Outbox : entry deleted (record_id=33)
+Test_Outbox : entry deleted (record_id=34)
+Test_Outbox : entry deleted (record_id=35)
+Test_Outbox : entry deleted (record_id=36)
+Test_Outbox : entry deleted (record_id=37)
+Test_Outbox : entry deleted (record_id=38)
+Test_Outbox : entry deleted (record_id=39)
+Test_Outbox : entry deleted (record_id=40)
+Test_Outbox : entry deleted (record_id=41)
+Test_Outbox : entry deleted (record_id=42)
+Test_Outbox : entry deleted (record_id=43)
+Test_Outbox : entry deleted (record_id=44)
+Test_Outbox: deleted 44 row(s); remaining 0.
+Test_UserContext: DELETE endpoint unavailable on this server; using /apply BulkRemoveRecord fallback.
+Test_UserContext : entry deleted (record_id=1)
+Test_UserContext : entry deleted (record_id=2)
+Test_UserContext : entry deleted (record_id=3)
+Test_UserContext: deleted 3 row(s); remaining 0.
+Test_RunLog: DELETE endpoint unavailable on this server; using /apply BulkRemoveRecord fallback.
+Test_RunLog : entry deleted (record_id=1)
+Test_RunLog : entry deleted (record_id=2)
+Test_RunLog : entry deleted (record_id=3)
+Test_RunLog : entry deleted (record_id=4)
+Test_RunLog : entry deleted (record_id=5)
+Test_RunLog : entry deleted (record_id=6)
+Test_RunLog : entry deleted (record_id=7)
+Test_RunLog : entry deleted (record_id=8)
+Test_RunLog : entry deleted (record_id=9)
+Test_RunLog : entry deleted (record_id=10)
+Test_RunLog : entry deleted (record_id=11)
+Test_RunLog : entry deleted (record_id=12)
+Test_RunLog : entry deleted (record_id=13)
+Test_RunLog : entry deleted (record_id=14)
+Test_RunLog : entry deleted (record_id=15)
+Test_RunLog : entry deleted (record_id=16)
+Test_RunLog : entry deleted (record_id=17)
+Test_RunLog : entry deleted (record_id=18)
+Test_RunLog : entry deleted (record_id=19)
+Test_RunLog : entry deleted (record_id=20)
+Test_RunLog : entry deleted (record_id=21)
+Test_RunLog : entry deleted (record_id=22)
+Test_RunLog : entry deleted (record_id=23)
+Test_RunLog : entry deleted (record_id=24)
+Test_RunLog : entry deleted (record_id=25)
+Test_RunLog : entry deleted (record_id=26)
+Test_RunLog : entry deleted (record_id=27)
+Test_RunLog : entry deleted (record_id=28)
+Test_RunLog : entry deleted (record_id=29)
+Test_RunLog: deleted 29 row(s); remaining 0.
+Test_Attachments: deleted 0 row(s); remaining 0.
+
+Batch Summary
+APR26-S1KHFL-BASE-MCS-001 - deleted (BatchStatusHistory=8, ProductBatchMS=4, ProductBatchMaster=1)
+
+Done. Deleted 128 row(s) from allow-listed tables.

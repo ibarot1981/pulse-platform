@@ -1,0 +1,25 @@
+Cleanup Run Timestamp: 2026-03-28 12:41:40
+Mode: DRY-RUN
+Scope lock: deletes rows only from the fixed allow-listed tables in this script.
+
+[COSTING] doc=hk5egrPh16UA3RkuzCLSDW
+ProductBatchMS: would delete 4 row(s).
+BatchStatusHistory: would delete 26 row(s).
+ProductBatchMaster: would delete 1 row(s).
+
+[PULSE] doc=dBAMmedPXsrYhGzsZS2qR6
+Activity_Log: would delete 63 row(s).
+Reminder_Log: would delete 0 row(s).
+
+[RUNTIME] doc=tSFZW3ybtD46ug2q76iMML
+Test_Inbox: would delete 116 row(s).
+Test_Outbox: would delete 188 row(s).
+Test_UserContext: would delete 4 row(s).
+Test_RunLog: would delete 125 row(s).
+Test_Attachments: would delete 0 row(s).
+
+Batch Summary
+MAR26-S1KHFL-BASE-MCS-001 - would delete (BatchStatusHistory=26, ProductBatchMS=4, ProductBatchMaster=1)
+
+Dry-run complete. 527 row(s) would be deleted from allow-listed tables.
+Re-run with --apply to execute.

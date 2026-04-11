@@ -459,8 +459,8 @@ This script performs:
 You can still push individual rows directly.
 
 ```powershell
-python scripts/grist/push_test_inbox.py --session sim-e2e-001 --actor 900000003 --text "/start" --process-now --render
-python scripts/grist/push_test_inbox.py --session sim-e2e-001 --actor 900000003 --callback "prodappr:approve:123" --process-now --render
+python scripts/grist/push_test_inbox.py --session sim-e2e-001 --actor 8492411029 --text "Manage Production" --process-now --render
+python scripts/grist/push_test_inbox.py --session sim-e2e-001 --actor 8492411029 --callback "prodsv:done_row:4" --process-now --render
 ```
 
 ### K5) Quick My MS Jobs runner (recommended)

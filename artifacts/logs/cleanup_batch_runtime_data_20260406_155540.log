@@ -1,0 +1,49 @@
+Cleanup Run Timestamp: 2026-04-06 15:55:40
+Mode: APPLY
+Scope lock: deletes rows only from the fixed allow-listed tables in this script.
+
+[COSTING] doc=hk5egrPh16UA3RkuzCLSDW
+ProductBatchMS: DELETE endpoint unavailable on this server; using /apply BulkRemoveRecord fallback.
+ProductBatchMS : entry deleted (record_id=1, batch_no=APR26-S1KHFL-BASE-MCS-001)
+ProductBatchMS : entry deleted (record_id=2, batch_no=APR26-S1KHFL-BASE-MCS-001)
+ProductBatchMS : entry deleted (record_id=3, batch_no=APR26-S1KHFL-BASE-MCS-001)
+ProductBatchMS : entry deleted (record_id=4, batch_no=APR26-S1KHFL-BASE-MCS-001)
+ProductBatchMS: deleted 4 row(s); remaining 0.
+BatchStatusHistory: DELETE endpoint unavailable on this server; using /apply BulkRemoveRecord fallback.
+BatchStatusHistory : entry deleted (record_id=1, batch_no=APR26-S1KHFL-BASE-MCS-001)
+BatchStatusHistory : entry deleted (record_id=2, batch_no=APR26-S1KHFL-BASE-MCS-001)
+BatchStatusHistory : entry deleted (record_id=3, batch_no=APR26-S1KHFL-BASE-MCS-001)
+BatchStatusHistory : entry deleted (record_id=4, batch_no=APR26-S1KHFL-BASE-MCS-001)
+BatchStatusHistory: deleted 4 row(s); remaining 0.
+ProductBatchMaster: DELETE endpoint unavailable on this server; using /apply BulkRemoveRecord fallback.
+ProductBatchMaster : entry deleted (record_id=1, batch_no=APR26-S1KHFL-BASE-MCS-001)
+ProductBatchMaster: deleted 1 row(s); remaining 0.
+
+[PULSE] doc=dBAMmedPXsrYhGzsZS2qR6
+Activity_Log: DELETE endpoint unavailable on this server; using /apply BulkRemoveRecord fallback.
+Activity_Log : entry deleted (record_id=1)
+Activity_Log : entry deleted (record_id=2)
+Activity_Log : entry deleted (record_id=3)
+Activity_Log : entry deleted (record_id=4)
+Activity_Log : entry deleted (record_id=5)
+Activity_Log : entry deleted (record_id=6)
+Activity_Log : entry deleted (record_id=7)
+Activity_Log : entry deleted (record_id=8)
+Activity_Log : entry deleted (record_id=9)
+Activity_Log : entry deleted (record_id=10)
+Activity_Log: deleted 10 row(s); remaining 0.
+Reminder_Log: deleted 0 row(s); remaining 0.
+
+[RUNTIME] doc=tSFZW3ybtD46ug2q76iMML
+Test_Inbox: deleted 0 row(s); remaining 0.
+Test_Outbox: deleted 0 row(s); remaining 0.
+Test_UserContext: deleted 0 row(s); remaining 0.
+Test_RunLog: DELETE endpoint unavailable on this server; using /apply BulkRemoveRecord fallback.
+Test_RunLog : entry deleted (record_id=1)
+Test_RunLog: deleted 1 row(s); remaining 0.
+Test_Attachments: deleted 0 row(s); remaining 0.
+
+Batch Summary
+APR26-S1KHFL-BASE-MCS-001 - deleted (BatchStatusHistory=4, ProductBatchMS=4, ProductBatchMaster=1)
+
+Done. Deleted 20 row(s) from allow-listed tables.
